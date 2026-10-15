@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  court-radar:
+    build: .
+    container_name: court_notice_radar
+    restart: always
+    ports:
+      - "5220:5220"
+    environment:
+      - SERVER_PORT=5220
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/app/data
