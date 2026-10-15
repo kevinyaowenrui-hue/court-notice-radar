@@ -610,3 +610,63 @@ def extract_risk_tags(text: str) -> list[str]:
         tags.append("存在抵押")
 
     return tags
+
+def find_existing_notice(db, platform: str, raw_id: str, title: str, auction_stage: Optional[str] = None):
+    """
+    通用两级精准查重函数：
+    1. 剥离平台前缀（如 sszc_、ali_、jd_、caa_、rmfyb_、hns_、sq_、zz_ 等）得到 pure_id，
+       同时多路比对 CourtNotice.raw_id.in_([raw_id, pure_id, f"{platform}_{pure_id}", f"sszc_{pure_id}"])，
+       彻底解决新旧版本 raw_id 前缀不一致导致的重复入库。
+    2. 若 ID 未命中，再按 platform == platform 且 func.trim(CourtNotice.title) == title.strip() 
+       且 (CourtNotice.auction_stage == auction_stage) 进行标题二次查重，防止跨城市关键词搜索重复入库同一房源。
+    """
+    from backend.models import CourtNotice
+    from sqlalchemy import func, or_
+    
+    if db is None:
+        return None
+
+    clean_raw_id = str(raw_id or '').strip()
+    clean_title = str(title or '').strip()
+    clean_stage = str(auction_stage or '').strip() if auction_stage else None
+
+    # 1. 前缀剥离与多路 raw_id 候选集匹配
+    candidate_ids = set()
+    if clean_raw_id:
+        candidate_ids.add(clean_raw_id)
+        pure_id = re.sub(r'^(sszc_|ali_|jd_|caa_|rmfyb_|hns_|sq_|zz_|lot_|paper_)', '', clean_raw_id)
+        if pure_id:
+            candidate_ids.add(pure_id)
+            candidate_ids.add(f"{platform}_{pure_id}")
+            candidate_ids.add(f"sszc_{pure_id}")
+            candidate_ids.add(f"jd_{pure_id}")
+            candidate_ids.add(f"caa_{pure_id}")
+            candidate_ids.add(f"rmfyb_{pure_id}")
+            candidate_ids.add(f"caa_lot_{pure_id}")
+
+        existing = db.query(CourtNotice).filter(
+            CourtNotice.platform == platform,
+            CourtNotice.raw_id.in_(list(candidate_ids))
+        ).first()
+        if existing:
+            return existing
+
+    # 2. 标题与拍卖阶段二次严密查重
+    if clean_title:
+        q = db.query(CourtNotice).filter(
+            CourtNotice.platform == platform,
+            func.trim(CourtNotice.title) == clean_title
+        )
+        if clean_stage:
+            q = q.filter(
+                or_(
+                    CourtNotice.auction_stage == clean_stage,
+                    CourtNotice.auction_stage.is_(None)
+                )
+            )
+        existing_title = q.first()
+        if existing_title:
+            return existing_title
+
+    return None
+

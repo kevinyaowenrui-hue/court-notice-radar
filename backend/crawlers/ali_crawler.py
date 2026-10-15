@@ -19,7 +19,7 @@ from backend.database import SessionLocal, DATA_DIR
 from backend.utils import (
     run_async, detect_henan_info, stable_hash, categorize_notice_module,
     is_vehicle_or_equipment_item, parse_price_amount, launch_smart_browser,
-    extract_bidding_times, extract_judicial_case_number
+    extract_bidding_times, extract_judicial_case_number, find_existing_notice
 )
 
 async def fetch_ali_real_auctions() -> List[dict]:
@@ -405,10 +405,7 @@ def crawl_ali_auctions(db: Optional[Session] = None, max_items: int = 40) -> Tup
 
             mod_type = categorize_notice_module(item["title"], item["content_text"], item["notice_type"], item["platform"])
 
-            existing = db.query(CourtNotice).filter(
-                CourtNotice.platform == item["platform"],
-                CourtNotice.raw_id == item["raw_id"]
-            ).first()
+            existing = find_existing_notice(db, item["platform"], item["raw_id"], item["title"], item.get("auction_stage"))
             if not existing:
                 notice = CourtNotice(
                     platform=item["platform"],

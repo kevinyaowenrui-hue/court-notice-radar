@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from backend.models import CourtNotice
 from backend.utils import (
     detect_henan_info, categorize_notice_module, extract_judicial_case_number,
-    extract_starting_and_eval_price
+    extract_starting_and_eval_price, find_existing_notice
 )
 
 # SSL 上下文（忽略过期/自签名证书）
@@ -359,20 +359,6 @@ def crawl_rmfysszc_notices(db: Optional[Session] = None, max_pages: int = 2) -> 
             date_str = it['date_str']
             detail = it.get('detail', {})
 
-            existing = db.query(CourtNotice).filter(
-                CourtNotice.platform == "rmfysszc",
-                CourtNotice.raw_id == raw_id
-            ).first()
-
-            # 解析发布时间
-            pub_dt = datetime.now()
-            if date_str:
-                try:
-                    clean_date = date_str.replace('.', '-').strip()
-                    pub_dt = datetime.strptime(clean_date, "%Y-%m-%d")
-                except Exception:
-                    pass
-
             # 阶段与分类推断 (标题先行兜底)
             stage = detail.get('auction_stage')
             if not stage or stage == "司法拍卖":
@@ -384,6 +370,17 @@ def crawl_rmfysszc_notices(db: Optional[Session] = None, max_pages: int = 2) -> 
                     stage = "变卖"
                 else:
                     stage = "一拍"
+
+            existing = find_existing_notice(db, "rmfysszc", raw_id, title, stage)
+
+            # 解析发布时间
+            pub_dt = datetime.now()
+            if date_str:
+                try:
+                    clean_date = date_str.replace('.', '-').strip()
+                    pub_dt = datetime.strptime(clean_date, "%Y-%m-%d")
+                except Exception:
+                    pass
 
             category = detail.get('asset_category') or "其他资产"
             if category in ["综合资产", "其他资产"]:

@@ -16,7 +16,7 @@ from backend.models import PaperSeed, CourtNotice
 from backend.utils import (
     detect_henan_info, is_promotional_content, categorize_notice_module, stable_hash,
     extract_starting_and_eval_price, is_vehicle_or_equipment_item, HENAN_CITIES,
-    extract_judicial_case_number
+    extract_judicial_case_number, find_existing_notice
 )
 
 HENAN_PAPER_CITY_MAP = {
@@ -430,10 +430,7 @@ def scan_monitored_papers(db: Optional[Session] = None, max_papers: int = 50) ->
                     continue
                 seen_raw_ids.add(raw_id)
 
-                existing = db.query(CourtNotice).filter(
-                    CourtNotice.platform == it["platform"],
-                    CourtNotice.raw_id == raw_id
-                ).first()
+                existing = find_existing_notice(db, it["platform"], raw_id, it["title"], it.get("auction_stage"))
                 if not existing:
                     notice = CourtNotice(
                         platform=it["platform"],

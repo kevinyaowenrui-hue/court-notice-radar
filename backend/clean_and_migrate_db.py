@@ -110,9 +110,114 @@ def clean_database(db_path: str = None):
             except Exception:
                 pass
 
+        # 8. 提前清理旧联合唯一索引，避免步骤 A 归并标的转移预警时触发约束冲突
+        cur.execute("DROP INDEX IF EXISTS uq_alert_rule_notice;")
+
+        # 步骤 A（归并重复标的）：在 court_notices 表中按 (platform, TRIM(title), COALESCE(auction_stage, '')) 分组
+        # 若 COUNT(*) > 1，保留 MIN(id)（若任意一条 is_starred=1 则保留星标），将关联的 alert_events.notice_id 指向保留的 id 并删除多余重复标的
+        dup_notices = cur.execute("""
+            SELECT platform, TRIM(title), COALESCE(auction_stage, ''), COUNT(*) as cnt, MIN(id) as keep_id, GROUP_CONCAT(id) as all_ids, MAX(COALESCE(is_starred, 0)) as max_starred
+            FROM court_notices
+            GROUP BY platform, TRIM(title), COALESCE(auction_stage, '')
+            HAVING COUNT(*) > 1;
+        """).fetchall()
+
+        merged_notices_count = 0
+        deleted_notices_count = 0
+        for row in dup_notices:
+            platform_val, title_val, stage_val, cnt, keep_id, all_ids_str, max_starred = row
+            all_ids = [int(i.strip()) for i in all_ids_str.split(',') if i.strip()]
+            dup_ids = [i for i in all_ids if i != keep_id]
+            if not dup_ids:
+                continue
+
+            # 保留星标
+            if max_starred == 1:
+                cur.execute("UPDATE court_notices SET is_starred = 1 WHERE id = ?", (keep_id,))
+
+            # 将关联的 alert_events.notice_id 指向保留的 id
+            placeholders = ','.join('?' for _ in dup_ids)
+            cur.execute(f"UPDATE alert_events SET notice_id = ? WHERE notice_id IN ({placeholders})", [keep_id] + dup_ids)
+
+            # 删除多余重复标的
+            cur.execute(f"DELETE FROM court_notices WHERE id IN ({placeholders})", dup_ids)
+            merged_notices_count += 1
+            deleted_notices_count += len(dup_ids)
+
+        if merged_notices_count > 0:
+            print(f"[Clean] 步骤 A 归并完成: 归并了 {merged_notices_count} 组重复标的，删除多余标的 {deleted_notices_count} 条")
+
+        # 9. 步骤 B（归并重复预警）：在 alert_events 表中按 notice_id 分组
+        # 对 COUNT(*) > 1 的记录，保留 MIN(id)，将其 rule_name 更新为去重合并后的 " | ".join(rule_names)，
+        # 将其 is_read 更新为 MAX(is_read)（只要点开过任意一条即视为已读），并删除同一 notice_id 下的其余重复行。
+        dup_alerts = cur.execute("""
+            SELECT notice_id, COUNT(*) as cnt, MIN(id) as keep_id
+            FROM alert_events
+            GROUP BY notice_id
+            HAVING COUNT(*) > 1;
+        """).fetchall()
+
+        merged_alerts_count = 0
+        deleted_alerts_count = 0
+        for row in dup_alerts:
+            nid, cnt, keep_id = row
+            events = cur.execute("""
+                SELECT id, rule_name, match_reason, is_read
+                FROM alert_events
+                WHERE notice_id = ?
+                ORDER BY id ASC;
+            """, (nid,)).fetchall()
+
+            if not events:
+                continue
+
+            all_rules = []
+            all_reasons = []
+            max_read = 0
+            other_ids = []
+
+            for eid, rname, mreason, is_read in events:
+                if eid != keep_id:
+                    other_ids.append(eid)
+                if is_read:
+                    max_read = 1
+                if rname:
+                    for r in str(rname).split(' | '):
+                        r = r.strip()
+                        if r and r not in all_rules:
+                            all_rules.append(r)
+                if mreason:
+                    for m in re.split(r'[；|]', str(mreason)):
+                        m = m.strip()
+                        if m and m not in all_reasons:
+                            all_reasons.append(m)
+
+            merged_rule_name = " | ".join(all_rules) if all_rules else (events[0][1] or '')
+            merged_reason = " ；".join(all_reasons) if all_reasons else (events[0][2] or '')
+
+            cur.execute("""
+                UPDATE alert_events
+                SET rule_name = ?, match_reason = ?, is_read = ?
+                WHERE id = ?;
+            """, (merged_rule_name, merged_reason, max_read, keep_id))
+
+            if other_ids:
+                placeholders = ','.join('?' for _ in other_ids)
+                cur.execute(f"DELETE FROM alert_events WHERE id IN ({placeholders})", other_ids)
+                deleted_alerts_count += len(other_ids)
+            merged_alerts_count += 1
+
+        if merged_alerts_count > 0:
+            print(f"[Clean] 步骤 B 归并完成: 归并了 {merged_alerts_count} 组重复预警，删除多余预警记录 {deleted_alerts_count} 条")
+
+        # 10. 步骤 C（重建唯一索引）：从数据库约束层彻底杜绝单标的产生多条预警
+        cur.execute("DROP INDEX IF EXISTS uq_alert_rule_notice;")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_notice_id ON alert_events (notice_id);")
+        print("[Clean] 步骤 C 完成: 重建唯一索引 uq_alert_notice_id (notice_id)")
+
         conn.commit()
 
-        # 8. 执行 WAL checkpoint TRUNCATE 合并与清理
+        # 11. 执行 WAL checkpoint TRUNCATE 合并与清理
         cur.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         cur.close()
         conn.close()

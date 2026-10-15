@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from backend.models import CourtNotice
 from backend.utils import (
     launch_smart_browser, extract_judicial_case_number, stable_hash,
-    run_async, detect_henan_info, is_promotional_content, categorize_notice_module
+    run_async, detect_henan_info, is_promotional_content, categorize_notice_module,
+    find_existing_notice
 )
 import urllib.request
 import urllib.parse
@@ -329,10 +330,7 @@ def crawl_rmfyb_notices(db: Optional[Session] = None, max_pages: int = 2):
 
             mod_type = categorize_notice_module(item["title"], item["content_text"], item["notice_type"], item["platform"])
 
-            existing = db.query(CourtNotice).filter(
-                CourtNotice.platform == item["platform"],
-                CourtNotice.raw_id == item["raw_id"]
-            ).first()
+            existing = find_existing_notice(db, item["platform"], item["raw_id"], item["title"], item.get("auction_stage"))
             if not existing:
                 notice = CourtNotice(
                     platform=item["platform"],

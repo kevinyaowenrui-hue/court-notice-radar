@@ -27,7 +27,8 @@ from backend.models import CourtNotice
 from backend.utils import (
     detect_henan_info, HENAN_CITIES, is_promotional_content,
     categorize_notice_module, stable_hash, is_vehicle_or_equipment_item,
-    parse_price_amount, extract_starting_and_eval_price, extract_bidding_times
+    parse_price_amount, extract_starting_and_eval_price, extract_bidding_times,
+    find_existing_notice
 )
 
 SSL_CTX = ssl.create_default_context()
@@ -602,7 +603,7 @@ def crawl_ggzy_publicity(db: Optional[Session] = None, max_items: int = 80) -> T
             elif any(k in t_str for k in ["房", "室", "楼", "门面", "商铺", "大厦", "公寓"]):
                 cat = "住宅/商业房产"
 
-            existing = db.query(CourtNotice).filter_by(platform="ggzy", raw_id=raw_id).first()
+            existing = find_existing_notice(db, "ggzy", raw_id, item["title"], item.get("auction_stage"))
             if existing:
                 existing.module_type = mod_type
                 existing.asset_category = cat

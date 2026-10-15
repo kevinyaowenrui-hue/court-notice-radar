@@ -196,7 +196,7 @@ def check_match(notice: CourtNotice, rule: MonitorRule) -> Optional[dict]:
     return None
 
 def match_new_notices(db: Session, new_notices: List[CourtNotice]) -> List[AlertEvent]:
-    """批量匹配新入库公示与活跃规则"""
+    """批量匹配新入库公示与活跃规则，实行源头一标一警写入合并"""
     if not new_notices:
         return []
 
@@ -205,35 +205,66 @@ def match_new_notices(db: Session, new_notices: List[CourtNotice]) -> List[Alert
         return []
 
     alerts_created = []
-    seen_in_batch = set()
+    seen_notice_ids = set()
+
     for notice in new_notices:
+        if not notice or not notice.id:
+            continue
+        if notice.id in seen_notice_ids:
+            continue
+        seen_notice_ids.add(notice.id)
+
+        matched_rules = []
         for rule in active_rules:
-            pair_key = (rule.id, notice.id)
-            if pair_key in seen_in_batch:
-                continue
-
-            # 检查数据库是否已存在此通知和规则的预警
-            existing = db.query(AlertEvent).filter(
-                AlertEvent.notice_id == notice.id,
-                AlertEvent.rule_id == rule.id
-            ).first()
-            if existing:
-                continue
-
             match_res = check_match(notice, rule)
             if match_res:
-                seen_in_batch.add(pair_key)
-                alert = AlertEvent(
-                    rule_id=rule.id,
-                    rule_name=rule.name,
-                    notice_id=notice.id,
-                    is_read=False,
-                    match_reason=match_res["match_reason"],
-                    highlight_text=match_res["highlight_text"]
-                )
-                db.add(alert)
-                alerts_created.append(alert)
+                matched_rules.append((rule, match_res))
+
+        if not matched_rules:
+            continue
+
+        hit_rule_names = [rule.name for rule, _ in matched_rules if rule.name]
+        hit_reasons = [m.get("match_reason") for _, m in matched_rules if m.get("match_reason")]
+        hit_highlights = [m.get("highlight_text") for _, m in matched_rules if m.get("highlight_text")]
+
+        # 在 alert_events 表中按 notice_id 唯一查重（每个 notice_id 全局只生成唯一 1 条 AlertEvent）
+        existing = db.query(AlertEvent).filter(AlertEvent.notice_id == notice.id).first()
+        if existing:
+            # 仅合并追加新规则名与原因，绝不插入第 2 行，且绝不重置已有的 is_read 状态
+            curr_rules = [r.strip() for r in (existing.rule_name or "").split(" | ") if r.strip()]
+            added_any = False
+            for rn in hit_rule_names:
+                if rn not in curr_rules:
+                    curr_rules.append(rn)
+                    added_any = True
+
+            curr_reasons = [re.strip() for re in (existing.match_reason or "").split(" ；") if re.strip()]
+            for hr in hit_reasons:
+                if hr not in curr_reasons:
+                    curr_reasons.append(hr)
+                    added_any = True
+
+            if added_any:
+                existing.rule_name = " | ".join(curr_rules)
+                existing.match_reason = " ；".join(curr_reasons)
+                alerts_created.append(existing)
+        else:
+            primary_rule = matched_rules[0][0]
+            dedup_rules = list(dict.fromkeys(hit_rule_names))
+            dedup_reasons = list(dict.fromkeys(hit_reasons))
+
+            alert = AlertEvent(
+                rule_id=primary_rule.id,
+                rule_name=" | ".join(dedup_rules),
+                notice_id=notice.id,
+                is_read=False,
+                match_reason=" ；".join(dedup_reasons),
+                highlight_text=hit_highlights[0] if hit_highlights else ""
+            )
+            db.add(alert)
+            alerts_created.append(alert)
 
     if alerts_created:
         db.commit()
     return alerts_created
+

@@ -106,36 +106,36 @@ def test_webhook_response_validation():
 
 def test_alert_event_uniqueness():
     print("\n" + "=" * 60)
-    print("测试 3: AlertEvent 数据库联合唯一约束拦截...")
+    print("测试 3: AlertEvent 数据库 notice_id 单标的唯一约束拦截...")
     print("=" * 60)
     from backend.database import SessionLocal
     from sqlalchemy.exc import IntegrityError
     db = SessionLocal()
     try:
         # 清理可能存在的历史测试记录
-        db.query(AlertEvent).filter(AlertEvent.rule_id == 8888, AlertEvent.notice_id == 7777).delete()
+        db.query(AlertEvent).filter(AlertEvent.notice_id == 7777).delete()
         db.commit()
 
-        # 插入第一条
+        # 插入第一条预警
         a1 = AlertEvent(
             rule_id=8888,
-            rule_name="唯一性测试规则",
+            rule_name="规则A",
             notice_id=7777,
-            match_reason="首次插入",
+            match_reason="首次插入规则A",
             highlight_text="测试内容"
         )
         db.add(a1)
         db.commit()
         print("PASS: 首次插入 AlertEvent 成功！")
 
-        # 尝试插入重复记录 (相同 rule_id 和 notice_id)
+        # 尝试为同一标的插入第二条记录 (即便是不同 rule_id)
         duplicate_caught = False
         try:
             a2 = AlertEvent(
-                rule_id=8888,
-                rule_name="唯一性测试规则",
+                rule_id=9999,
+                rule_name="规则B",
                 notice_id=7777,
-                match_reason="重复插入",
+                match_reason="重复插入规则B",
                 highlight_text="测试内容"
             )
             db.add(a2)
@@ -144,10 +144,10 @@ def test_alert_event_uniqueness():
             db.rollback()
             duplicate_caught = True
 
-        assert duplicate_caught, "数据库应该触发唯一约束异常并成功回滚！"
-        print("PASS: 数据库成功触发唯一约束拦截，杜绝重复入库！")
+        assert duplicate_caught, "数据库应该触发 notice_id 唯一约束异常并成功回滚！"
+        print("PASS: 数据库成功触发 notice_id 唯一约束拦截，从底层彻底杜绝一标多警！")
     finally:
-        db.query(AlertEvent).filter(AlertEvent.rule_id == 8888, AlertEvent.notice_id == 7777).delete()
+        db.query(AlertEvent).filter(AlertEvent.notice_id == 7777).delete()
         db.commit()
         db.close()
 

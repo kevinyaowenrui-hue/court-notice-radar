@@ -15,7 +15,7 @@ from backend.models import CourtNotice
 from backend.utils import (
     stable_hash, run_async, detect_henan_info, categorize_notice_module,
     HENAN_CITIES, is_vehicle_or_equipment_item, launch_smart_browser,
-    extract_judicial_case_number
+    extract_judicial_case_number, find_existing_notice
 )
 
 # 常用地市法院映射辅助
@@ -771,10 +771,7 @@ def crawl_jd_auctions(db: Optional[Session] = None, max_items: int = 15) -> Tupl
 
             mod_type = categorize_notice_module(item["title"], item["content_text"], item["notice_type"], item["platform"])
 
-            existing = db.query(CourtNotice).filter(
-                CourtNotice.platform == item["platform"],
-                CourtNotice.raw_id == item["raw_id"]
-            ).first()
+            existing = find_existing_notice(db, item["platform"], item["raw_id"], item["title"], item.get("auction_stage"))
 
             if not existing:
                 notice = CourtNotice(

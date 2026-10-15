@@ -43,6 +43,23 @@ export default function NoticeItemRow({ item, isSelected, isUnread, ruleName, on
     return map[platform] || platform;
   };
 
+  const simplifyRuleName = (name) => {
+    if (!name) return '';
+    const trimmed = name.trim();
+    if (trimmed.includes('重点不动产')) return '重点不动产';
+    if (trimmed.includes('高优') || (trimmed.includes('一拍') && trimmed.includes('房源'))) return '【高优】一拍房源';
+    if (trimmed.includes('捡漏') || (trimmed.includes('二拍') && trimmed.includes('房源'))) return '【捡漏】二拍房源';
+    if (trimmed.includes('不良债权') || trimmed.includes('债权与资产包')) return '金融不良债权';
+    if (trimmed.includes('破产清算') || trimmed.includes('重组预警')) return '企业破产重组';
+    if (trimmed.includes('53BK') || trimmed.includes('地方报纸')) return '地方报刊雷达';
+    if (trimmed.includes('法网雷达') || trimmed.includes('人民法院报') || trimmed.includes('诉讼送达')) return '【法网】送达/执行';
+    if (trimmed.includes('一拍')) return '一拍精选';
+    if (trimmed.includes('二拍')) return '二拍捡漏';
+    if (trimmed.includes('变卖')) return '优质变卖';
+    const clean = trimmed.replace(/^[【\[（(]/, '').replace(/[】\]）)]$/, '');
+    return clean.length > 8 ? clean.slice(0, 8) + '...' : clean;
+  };
+
   const timeFormatted = formatPublishTime(item.publish_time);
 
   return (
@@ -154,9 +171,21 @@ export default function NoticeItemRow({ item, isSelected, isUnread, ruleName, on
           {ruleName && (
             <>
               <span>·</span>
-              <span className="text-rose-400 flex items-center space-x-0.5 truncate max-w-[120px]">
-                <ShieldAlert className="w-3 h-3 inline shrink-0 mr-0.5" />
-                <span>{ruleName}</span>
+              <span className="flex items-center space-x-1 shrink-0">
+                {ruleName.split(' | ').map((rn, idx) => {
+                  const label = simplifyRuleName(rn);
+                  if (!label) return null;
+                  return (
+                    <span
+                      key={idx}
+                      className="px-1.5 py-0.2 text-[10px] font-medium rounded bg-rose-950/40 text-rose-300 border border-rose-800/40 flex items-center space-x-0.5 shrink-0"
+                      title={rn.trim()}
+                    >
+                      <ShieldAlert className="w-2.5 h-2.5 inline shrink-0 mr-0.5 text-rose-400" />
+                      <span>{label}</span>
+                    </span>
+                  );
+                })}
               </span>
             </>
           )}

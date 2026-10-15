@@ -69,16 +69,16 @@ class AlertEvent(Base):
     __tablename__ = "alert_events"
 
     id = Column(Integer, primary_key=True, index=True)
-    rule_id = Column(Integer, index=True, nullable=False)      # 命中规则ID
-    rule_name = Column(String(128), nullable=False)            # 命中规则名称
+    rule_id = Column(Integer, index=True, nullable=False)      # 命中主规则ID
+    rule_name = Column(Text, nullable=False)                   # 命中规则名称（支持多规则组合合并）
     notice_id = Column(Integer, index=True, nullable=False)    # 对应的公示记录ID
     is_read = Column(Boolean, default=False, index=True)       # 是否已读
-    match_reason = Column(String(256), nullable=False)         # 命中原因描述，例如“命中当事人关键词: 某某实业”
+    match_reason = Column(Text, nullable=False)                # 命中原因描述
     highlight_text = Column(Text)                              # 命中的上下文高亮片段
     created_at = Column(DateTime, default=datetime.now, index=True)
 
     __table_args__ = (
-        UniqueConstraint('rule_id', 'notice_id', name='uq_alert_rule_notice'),
+        UniqueConstraint('notice_id', name='uq_alert_notice_id'),
     )
 
 class PaperSeed(Base):

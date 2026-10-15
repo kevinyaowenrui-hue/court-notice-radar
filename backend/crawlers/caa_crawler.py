@@ -16,7 +16,7 @@ from backend.models import CourtNotice
 from backend.utils import (
     detect_henan_info, is_promotional_content, categorize_notice_module,
     is_vehicle_or_equipment_item, extract_starting_and_eval_price,
-    extract_bidding_times
+    extract_bidding_times, find_existing_notice
 )
 
 HEADERS = {
@@ -417,10 +417,7 @@ def crawl_caa_publicity(db: Optional[Session] = None, max_items: int = 50) -> Tu
 
             mod_type = categorize_notice_module(it["title"], it["content_text"], it["notice_type"], "caa")
 
-            existing = db.query(CourtNotice).filter(
-                CourtNotice.platform == "caa",
-                CourtNotice.raw_id == it["raw_id"]
-            ).first()
+            existing = find_existing_notice(db, "caa", it["raw_id"], it["title"], it.get("auction_stage"))
 
             if not existing:
                 notice = CourtNotice(
