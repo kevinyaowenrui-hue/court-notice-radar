@@ -344,9 +344,9 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
             else:
                 paper_date = datetime.now()
 
-            # 时效门禁校验：严格以最新刊发为主，放宽至 7 天容错以覆盖周末与休刊期
+            # 时效门禁校验：放宽至 15 天以完整覆盖最近半个月报纸公告
             days_diff = (datetime.now() - paper_date).total_seconds() / 86400.0
-            if days_diff > 7.0:
+            if days_diff > 15.0:
                 continue
 
             # 使用补全后的 title 生成唯一 raw_id

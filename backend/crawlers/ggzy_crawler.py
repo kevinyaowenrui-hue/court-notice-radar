@@ -171,8 +171,8 @@ def fetch_shangqiu_cqjy(max_pages: int = 2) -> List[dict]:
         }
 
         today_str = datetime.now().strftime("%Y-%m-%d")
-        begin_str = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
-        # 抓取 noticType=1 (转让公告) 和 noticType=3 (结果公告)，放宽至近3天防止跨夜或跨周末漏采
+        begin_str = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
+        # 抓取 noticType=1 (转让公告) 和 noticType=3 (结果公告)，放宽至近15天覆盖完整时间纵深
         for notic_type in ['1', '3']:
             for p in range(1, max_pages + 1):
                 body = (
@@ -215,10 +215,10 @@ def fetch_shangqiu_cqjy(max_pages: int = 2) -> List[dict]:
                                 except Exception:
                                     pub_time = None
 
-                                # 时效门禁校验：严格过滤超出 3 天的历史旧数据
+                                # 时效门禁校验：放宽至 15 天以完整覆盖近半个月公告
                                 if pub_time is not None:
                                     days_diff = (datetime.now() - pub_time).total_seconds() / 86400.0
-                                    if days_diff > 3.0:
+                                    if days_diff > 15.0:
                                         continue
 
                                 # 穿透详情页抓取起拍价、评估价及竞价时间
@@ -318,10 +318,10 @@ def fetch_henan_provincial_cqjy(page_size: int = 30, kw: str = "") -> List[dict]
                 except Exception:
                     pub_time = None
 
-                # 时效门禁校验：严格过滤超出 3 天的历史旧数据
+                # 时效门禁校验：放宽至 15 天以完整覆盖近半个月公告
                 if pub_time is not None:
                     days_diff = (datetime.now() - pub_time).total_seconds() / 86400.0
-                    if days_diff > 3.0:
+                    if days_diff > 15.0:
                         continue
 
                 # 穿透详情页抓取起拍价、评估价及竞价时间（优先curl，自动降级urllib）
@@ -491,10 +491,10 @@ def fetch_zhengzhou_cqjy(page_size: int = 25) -> List[dict]:
                 except Exception:
                     pub_time = None
 
-                # 时效门禁校验：严格过滤超出 3 天的历史旧数据
+                # 时效门禁校验：放宽至 15 天以完整覆盖近半个月公告
                 if pub_time is not None:
                     days_diff = (datetime.now() - pub_time).total_seconds() / 86400.0
-                    if days_diff > 3.0:
+                    if days_diff > 15.0:
                         continue
 
                 # 提取挂牌价格 / 成交价格及竞价时间

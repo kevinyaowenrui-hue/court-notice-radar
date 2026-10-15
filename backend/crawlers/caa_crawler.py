@@ -284,8 +284,18 @@ def fetch_caa_lots(province_code: str = "410000", count: int = 40, filter_name: 
                         except Exception:
                             pass
                     
-                    # 发布时间优先开拍时间，若未来则为当前时间
-                    pub_time = bidding_start if bidding_start and bidding_start <= datetime.now() else datetime.now()
+                    # 发布时间结合竞价开始时间合理推算，避免所有未来标的盲目打上当前时间
+                    now_time = datetime.now()
+                    if bidding_start:
+                        if bidding_start <= now_time:
+                            pub_time = bidding_start - timedelta(days=7)
+                        else:
+                            days_adv = 15 if "二拍" in title or "变卖" in title else 30
+                            inferred = bidding_start - timedelta(days=days_adv)
+                            days_left = (bidding_start - now_time).total_seconds() / 86400.0
+                            pub_time = inferred if inferred <= now_time else (now_time - timedelta(days=max(1, int(days_adv - days_left))))
+                    else:
+                        pub_time = now_time
                     detail_url = f"https://paimai.caa123.org.cn/pages/lots/profession.html?meetId={meet_id}&lotId={lot_id}"
                     
                     # 标的分类

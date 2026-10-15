@@ -193,6 +193,30 @@ async def fetch_ali_real_auctions() -> List[dict]:
 
                                         is_henan, henan_city, henan_tag = detect_henan_info(title, court_name, content_text)
 
+                                        # 真实或合理公告发布时间提取与推算
+                                        now_time = datetime.now()
+                                        pub_time = None
+                                        if d.get("publishTime"):
+                                            try:
+                                                pub_time = datetime.fromtimestamp(int(d["publishTime"]) / 1000)
+                                            except Exception:
+                                                pass
+                                        if not pub_time and d.get("gmtCreate"):
+                                            try:
+                                                pub_time = datetime.fromtimestamp(int(d["gmtCreate"]) / 1000)
+                                            except Exception:
+                                                pass
+                                        if not pub_time and b_start:
+                                            if b_start <= now_time:
+                                                pub_time = b_start - timedelta(days=7)
+                                            else:
+                                                days_adv = 15 if stage in ["二拍", "变卖"] else 30
+                                                inferred = b_start - timedelta(days=days_adv)
+                                                days_left = (b_start - now_time).total_seconds() / 86400.0
+                                                pub_time = inferred if inferred <= now_time else (now_time - timedelta(days=max(1, int(days_adv - days_left))))
+                                        if not pub_time or pub_time > now_time:
+                                            pub_time = now_time
+
                                         results.append({
                                             "platform": "ali",
                                             "raw_id": raw_id,
@@ -203,7 +227,7 @@ async def fetch_ali_real_auctions() -> List[dict]:
                                             "module_type": "拍卖公告",
                                             "title": title,
                                             "content_text": content_text,
-                                            "publish_time": datetime.now(),
+                                            "publish_time": pub_time,
                                             "source_url": clean_url,
                                             "starting_price": sp,
                                             "eval_price": ep,
@@ -329,8 +353,20 @@ async def fetch_ali_real_auctions() -> List[dict]:
                                 publish_time = datetime.strptime(clean_dt.strip(), fmt)
                             except Exception:
                                 pass
+                        now_time = datetime.now()
                         if not publish_time:
-                            publish_time = datetime.now()
+                            if b_start:
+                                if b_start <= now_time:
+                                    publish_time = b_start - timedelta(days=7)
+                                else:
+                                    days_adv = 15 if "二拍" in title or "变卖" in title else 30
+                                    inferred = b_start - timedelta(days=days_adv)
+                                    days_left = (b_start - now_time).total_seconds() / 86400.0
+                                    publish_time = inferred if inferred <= now_time else (now_time - timedelta(days=max(1, int(days_adv - days_left))))
+                            else:
+                                publish_time = now_time
+                        elif publish_time > now_time:
+                            publish_time = now_time
 
                         # 河南智能识别 (属地法院 / 跨域涉豫资产)
                         is_henan, henan_city, henan_tag = detect_henan_info(

@@ -374,13 +374,26 @@ def crawl_rmfysszc_notices(db: Optional[Session] = None, max_pages: int = 2) -> 
             existing = find_existing_notice(db, "rmfysszc", raw_id, title, stage)
 
             # 解析发布时间
-            pub_dt = datetime.now()
+            pub_dt = None
             if date_str:
                 try:
                     clean_date = date_str.replace('.', '-').strip()
                     pub_dt = datetime.strptime(clean_date, "%Y-%m-%d")
                 except Exception:
                     pass
+            now_time = datetime.now()
+            if not pub_dt:
+                b_start = detail.get('bidding_start')
+                if b_start:
+                    if b_start <= now_time:
+                        pub_dt = b_start - timedelta(days=7)
+                    else:
+                        days_adv = 15 if stage in ["二拍", "变卖"] else 30
+                        inferred = b_start - timedelta(days=days_adv)
+                        days_left = (b_start - now_time).total_seconds() / 86400.0
+                        pub_dt = inferred if inferred <= now_time else (now_time - timedelta(days=max(1, int(days_adv - days_left))))
+            if not pub_dt or pub_dt > now_time:
+                pub_dt = now_time
 
             category = detail.get('asset_category') or "其他资产"
             if category in ["综合资产", "其他资产"]:

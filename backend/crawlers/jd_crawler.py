@@ -423,9 +423,6 @@ def parse_jd_api_item(d: dict, max_days: int = 3) -> dict:
         except Exception:
             pass
 
-    if not publish_time:
-        publish_time = datetime.now()
-
     # 竞价时间提取
     bidding_start = None
     if d.get("startTime"):
@@ -439,6 +436,30 @@ def parse_jd_api_item(d: dict, max_days: int = 3) -> dict:
             bidding_end = datetime.fromtimestamp(d.get("endTime") / 1000)
         except Exception:
             pass
+
+    now = datetime.now()
+    if not publish_time:
+        if bidding_start:
+            if bidding_start <= now:
+                publish_time = bidding_start
+            else:
+                stage_str = d.get("paimaiStage") or d.get("title") or ""
+                is_second = "二拍" in stage_str or "第二次" in stage_str or "变卖" in stage_str
+                days_adv = 15 if is_second else 30
+                inferred = bidding_start - timedelta(days=days_adv)
+                days_left = (bidding_start - now).total_seconds() / 86400.0
+                publish_time = inferred if inferred <= now else (now - timedelta(days=max(1, int(days_adv - days_left))))
+        else:
+            publish_time = now
+    elif publish_time > now:
+        if bidding_start:
+            stage_str = d.get("paimaiStage") or d.get("title") or ""
+            is_second = "二拍" in stage_str or "第二次" in stage_str or "变卖" in stage_str
+            days_adv = 15 if is_second else 30
+            inferred = bidding_start - timedelta(days=days_adv)
+            publish_time = inferred if inferred <= now else now
+        else:
+            publish_time = now
 
     # 时效门禁过滤：若开启当日/时效优先，仅当有明确真实发布时间时过滤超出 max_days 天的旧数据
     if max_days is not None and publish_time is not None:
@@ -694,6 +715,22 @@ async def fetch_jd_real_auctions() -> List[dict]:
                             elif any(k in t_p for k in ["房产", "住宅", "商品房", "公寓", "洋房", "别墅", "门面", "商铺", "车位", "车库", "室", "号楼", "单元", "大厦", "楼房"]):
                                 cat = "住宅/商业房产"
 
+                            now_time = datetime.now()
+                            item_pub = detail.get("publish_time")
+                            if not item_pub:
+                                if b_start:
+                                    if b_start <= now_time:
+                                        item_pub = b_start
+                                    else:
+                                        days_adv = 15 if "二拍" in lot_title or "变卖" in lot_title else 30
+                                        inferred = b_start - timedelta(days=days_adv)
+                                        days_left = (b_start - now_time).total_seconds() / 86400.0
+                                        item_pub = inferred if inferred <= now_time else (now_time - timedelta(days=max(1, int(days_adv - days_left))))
+                                else:
+                                    item_pub = now_time
+                            elif item_pub > now_time:
+                                item_pub = now_time
+
                             results_map[raw_id] = {
                                 "platform": "jd",
                                 "raw_id": raw_id,
@@ -703,7 +740,7 @@ async def fetch_jd_real_auctions() -> List[dict]:
                                 "notice_type": "资产/司法拍卖",
                                 "title": lot_title,
                                 "content_text": f"【京东拍卖】\n标的名称：{lot_title}\n链接：{clean_url}\n{detail.get('content', text)[:300]}",
-                                "publish_time": detail.get("publish_time") or datetime.now(),
+                                "publish_time": item_pub,
                                 "source_url": clean_url,
                                 "starting_price": sp,
                                 "eval_price": ep,

@@ -7,6 +7,109 @@ import sqlite3
 import json
 import re
 import os
+from datetime import datetime, timedelta
+
+def _parse_dt(dt_val):
+    if not dt_val:
+        return None
+    if isinstance(dt_val, datetime):
+        return dt_val
+    clean = str(dt_val).strip()
+    clean = clean.replace('年', '-').replace('月', '-').replace('日', '')
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(clean[:19], fmt)
+        except Exception:
+            pass
+    return None
+
+def step8_fix_publish_timestamps(conn: sqlite3.Connection):
+    """
+    修复存量数据中失真的 publish_time：
+    1. 从 URL 或 content_text 中提取真实的发布/刊登日期；
+    2. 纠正 publish_time 晚于当前时间（误把未来 bidding_start 写入 publish_time）的记录；
+    3. 对法拍渠道（ali/jd/caa/rmfysszc）没有真实发布日期、仅被填了采集当天时间的记录，
+       结合 bidding_start（竞价开始时间）还原其合理的公告期发布时间。
+    """
+    cur = conn.cursor()
+    now = datetime.now()
+    rows = cur.execute(
+        "SELECT id, platform, title, content_text, source_url, publish_time, bidding_start, created_at FROM court_notices"
+    ).fetchall()
+
+    date_patterns = [
+        re.compile(r"(?:发布|公示|刊登|公告|挂牌)(?:时间|日期)[：:\s]*(\d{4}[-/年]\d{1,2}[-/月]\d{1,2}(?:日)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)"),
+        re.compile(r"/(202[4-6])[-/]?(\d{2})[-/](\d{2})/"),  # 匹配 URL 中的 /2026-10/08/ 或 /202610/08/
+    ]
+
+    updated_count = 0
+    for row_id, platform, title, content_text, source_url, pub_str, bid_str, created_str in rows:
+        text = f"{title or ''}\n{content_text or ''}"
+        url = source_url or ""
+
+        pub_dt = _parse_dt(pub_str)
+        bid_dt = _parse_dt(bid_str)
+
+        # 若正文中有明确的「竞价开始: YYYY-MM-DD HH:MM:SS」但 bidding_start 为空，先补齐 bidding_start
+        if not bid_dt:
+            m_bid = re.search(r"(?:竞价开始|开拍时间|拍卖时间)[：:\s]*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?)", text)
+            if m_bid:
+                bid_dt = _parse_dt(m_bid.group(1))
+
+        # 尝试从正文或 URL 提取真实发布日期
+        extracted_pub_dt = None
+        m_text = date_patterns[0].search(text)
+        if m_text:
+            extracted_pub_dt = _parse_dt(m_text.group(1))
+        if not extracted_pub_dt:
+            m_url = date_patterns[1].search(url)
+            if m_url:
+                try:
+                    extracted_pub_dt = datetime(int(m_url.group(1)), int(m_url.group(2)), int(m_url.group(3)), 9, 0, 0)
+                except ValueError:
+                    pass
+
+        new_pub_dt = pub_dt
+
+        # 情况 A：从正文/URL 提取到了明确且不晚于现在的发布时间
+        if extracted_pub_dt and extracted_pub_dt <= now:
+            new_pub_dt = extracted_pub_dt
+        # 情况 B：当前 publish_time 晚于现在（被错误填成了未来的开拍时间）
+        elif pub_dt and pub_dt > now:
+            if not bid_dt:
+                bid_dt = pub_dt
+            days_until_bid = (bid_dt - now).total_seconds() / 86400.0
+            inferred = bid_dt - timedelta(days=15)
+            new_pub_dt = inferred if inferred <= now else (now - timedelta(days=max(1, int(15 - days_until_bid))))
+        # 情况 C：拍卖标的（caa/ali/jd/rmfysszc）的 publish_time 被硬编码成了入库时间（如 2026-10-14 10:00），但有明确的 bidding_start
+        elif bid_dt and platform in ("caa", "ali", "jd", "rmfysszc"):
+            if bid_dt <= now:
+                new_pub_dt = bid_dt - timedelta(days=7)
+            else:
+                days_left = (bid_dt - now).total_seconds() / 86400.0
+                if days_left <= 2:
+                    # 2天内开拍的标的（如 10-16 开拍），真实公告至少在 5~10 天前发布（归入近7天或全部）
+                    new_pub_dt = bid_dt - timedelta(days=7)
+                elif days_left <= 7:
+                    # 3~7天内开拍的标的，真实公告在 2~4 天前发布（归入近3天/近7天）
+                    new_pub_dt = bid_dt - timedelta(days=5)
+                else:
+                    # 7天以上开拍的标的：根据司法拍卖法定公告期（一拍30天/二拍15天）推算公告发布日
+                    inferred = bid_dt - timedelta(days=30 if ("一拍" in text or "第一次" in text) else 15)
+                    new_pub_dt = inferred if inferred <= now else (now - timedelta(days=min(10, max(3, int(days_left - 5)))))
+
+        if new_pub_dt and new_pub_dt > now:
+            new_pub_dt = now - timedelta(days=1)
+
+        if new_pub_dt and new_pub_dt != pub_dt:
+            cur.execute(
+                "UPDATE court_notices SET publish_time = ?, bidding_start = COALESCE(bidding_start, ?) WHERE id = ?",
+                (new_pub_dt.strftime("%Y-%m-%d %H:%M:%S"), bid_dt.strftime("%Y-%m-%d %H:%M:%S") if bid_dt else None, row_id)
+            )
+            updated_count += 1
+
+    conn.commit()
+    print(f"[Step 8] 已校准 {updated_count} 条存量记录的真实发布时间 publish_time")
 
 def clean_database(db_path: str = None):
     """执行存量数据与监控规则全面清洗与规范化"""
@@ -24,6 +127,9 @@ def clean_database(db_path: str = None):
     cur = conn.cursor()
 
     try:
+        # 0. 修复存量数据中失真的 publish_time 与未来时间
+        step8_fix_publish_timestamps(conn)
+
         # 1. 清理 53BK 硬编码预置假数据及关联误报
         cur.execute("""
             DELETE FROM alert_events WHERE notice_id IN (
