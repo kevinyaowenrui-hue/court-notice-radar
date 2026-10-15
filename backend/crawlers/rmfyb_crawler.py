@@ -43,6 +43,87 @@ def fetch_rmfygg_detail(uuid: str) -> dict:
     except Exception:
         return {}
 
+def fetch_rmfyb_static_epaper(target_date: Optional[datetime] = None) -> List[dict]:
+    """
+    备用通道：抓取《人民法院报》静态数字报（http://rmfyb.chinacourt.org/paper/html/YYYY-MM/DD/node_2.htm 至 node_8.htm）
+    当 rmfygg.court.gov.cn 主通道返回 0 条或请求异常时自动触发兜底
+    """
+    if target_date is None:
+        target_date = datetime.now()
+
+    results = []
+    seen_urls = set()
+    dates_to_try = [target_date, target_date - timedelta(days=1), target_date - timedelta(days=2)]
+
+    for dt in dates_to_try:
+        found_date_articles = []
+        for node_idx in range(2, 9):  # node_2.htm 至 node_8.htm (法院公告版)
+            node_url = dt.strftime(f"http://rmfyb.chinacourt.org/paper/html/%Y-%m/%d/node_{node_idx}.htm")
+            try:
+                req = urllib.request.Request(node_url, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+                })
+                with urllib.request.urlopen(req, timeout=6) as resp:
+                    page_html = resp.read().decode('utf-8', errors='ignore')
+                    art_matches = re.findall(r'<a[^>]+href=[\'"]([^\'"]*content_\d+\.htm)[\'"][^>]*>(.*?)</a>', page_html, re.I | re.S)
+                    for rel_href, link_text in art_matches:
+                        clean_title = re.sub(r'<[^>]+>', '', link_text).strip()
+                        if len(clean_title) < 2:
+                            continue
+
+                        art_url = urllib.parse.urljoin(node_url, rel_href)
+                        if art_url in seen_urls:
+                            continue
+                        seen_urls.add(art_url)
+
+                        body_text = clean_title
+                        try:
+                            art_req = urllib.request.Request(art_url, headers={'User-Agent': 'Mozilla/5.0'})
+                            with urllib.request.urlopen(art_req, timeout=5) as art_resp:
+                                art_html = art_resp.read().decode('utf-8', errors='ignore')
+                                b_text = re.sub(r'<script[^>]*>.*?</script>', ' ', art_html, flags=re.S|re.I)
+                                b_text = re.sub(r'<style[^>]*>.*?</style>', ' ', b_text, flags=re.S|re.I)
+                                b_text = re.sub(r'<[^>]+>', ' ', b_text)
+                                body_text = re.sub(r'\s+', ' ', b_text).strip()
+                        except Exception:
+                            pass
+
+                        case_no = extract_judicial_case_number(f"{clean_title} {body_text}") or ""
+                        court_match = re.search(r'([\u4e00-\u9fa5]{2,15}(?:高级人民法院|中级人民法院|基层人民法院|人民法院|法庭))', f"{clean_title} {body_text}")
+                        court_name = court_match.group(1) if court_match else "人民法院"
+
+                        is_h, h_c, h_t = detect_henan_info(
+                            title=clean_title,
+                            content=body_text,
+                            court_name=court_name,
+                            case_number=case_no
+                        )
+
+                        raw_id = f"rmfyb_paper_{stable_hash(art_url)}"
+                        found_date_articles.append({
+                            "platform": "rmfyb",
+                            "raw_id": raw_id,
+                            "court_name": court_name,
+                            "case_number": case_no,
+                            "parties": "",
+                            "notice_type": "法院公告",
+                            "title": clean_title,
+                            "content_text": body_text[:2000],
+                            "publish_time": dt,
+                            "source_url": art_url,
+                            "is_henan": is_h,
+                            "henan_city": h_c,
+                            "henan_tag": h_t
+                        })
+            except Exception:
+                continue
+
+        if found_date_articles:
+            results.extend(found_date_articles)
+            break
+
+    return results
+
 async def fetch_rmfyb_real_notices() -> List[dict]:
     results = []
     warning_reasons = []
@@ -55,7 +136,7 @@ async def fetch_rmfyb_real_notices() -> List[dict]:
         )
         page = await context.new_page()
 
-        # 1. 抓取人民法院公告网真实最新公示 (双向覆盖：定向检索河南法院 + 嗅探全国大盘跨域涉豫)
+        # 1. 抓取人民法院公告网真实最新公示 (优先按“河南”及重点地市法院定向检索 + 嗅探全国大盘跨域涉豫)
         try:
             await page.goto("https://rmfygg.court.gov.cn/web/rmfyportal/noticeinfo", timeout=30000, wait_until="domcontentloaded")
             await page.wait_for_timeout(3000)
@@ -67,6 +148,11 @@ async def fetch_rmfyb_real_notices() -> List[dict]:
 
             search_modes = [
                 {"name": "河南省各级法院专场", "court_query": "河南"},
+                {"name": "郑州法院定向", "court_query": "郑州"},
+                {"name": "洛阳法院定向", "court_query": "洛阳"},
+                {"name": "南阳法院定向", "court_query": "南阳"},
+                {"name": "商丘法院定向", "court_query": "商丘"},
+                {"name": "新乡法院定向", "court_query": "新乡"},
                 {"name": "全国大盘实时公示", "court_query": ""}
             ]
 
@@ -200,6 +286,14 @@ async def fetch_rmfyb_real_notices() -> List[dict]:
         # 注：彻底剔除 rmfyb.com 离退休活动等政务新闻抓取，系统严格聚焦法院真实司法公告
 
         await browser.close()
+
+    # 当主通道返回 0 条或请求异常时，自动触发备用通道抓取《人民法院报》静态数字报
+    if len(results) == 0:
+        print("[rmfyb_crawler] 主通道返回 0 条，触发备用通道抓取《人民法院报》静态数字报...")
+        backup_items = fetch_rmfyb_static_epaper()
+        print(f"[rmfyb_crawler] 备用通道静态数字报抓取到 {len(backup_items)} 条公告")
+        results.extend(backup_items)
+
     warning_msg = " ; ".join(warning_reasons) if warning_reasons else None
     return results, warning_msg
 

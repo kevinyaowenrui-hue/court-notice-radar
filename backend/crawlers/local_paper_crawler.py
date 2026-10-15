@@ -131,6 +131,40 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
                 seen_nodes.add(full_nurl)
                 editions.append((clean_t, full_nurl))
 
+        # 新增今日/昨日日期路径主动探测兜底：当从 seed.epaper_url 首页未提取到 editions 版面列表时自动探测
+        if not editions:
+            template_paths = [
+                "html/%Y-%m/%d/node_1.htm",
+                "html/%Y-%m/%d/node_01.htm",
+                "pc/layout/%Y%m/%d/node_01.html",
+                "pc/layout/%Y%m/%d/node_1.html",
+                "szb/%Y%m%d/html/index.htm",
+                "epaper/%Y-%m/%d/node_01.htm"
+            ]
+            base_probe_url = seed.epaper_url.rstrip("/") + "/"
+            for offset in [0, 1]:
+                dt = datetime.now() - timedelta(days=offset)
+                found_probe = False
+                for tpl in template_paths:
+                    probe_rel = dt.strftime(tpl)
+                    probe_url = urljoin(base_probe_url, probe_rel)
+                    _, p_html = fetch_paper_html(probe_url, timeout=5)
+                    if p_html and len(p_html) > 400:
+                        p_matches = re.findall(r'<a[^>]*href=["\']?([^"\'\s>]*(?:node_|page_|layout|szb)[^"\'\s>]*)["\']?[^>]*>(.*?)</a>', p_html, re.I | re.S)
+                        if p_matches:
+                            current_issue_url = probe_url
+                            seed_html = p_html
+                            for href, p_title in p_matches:
+                                clean_t = re.sub(r'<[^>]+>', '', p_title).strip()
+                                full_nurl = urljoin(current_issue_url, href)
+                                if full_nurl not in seen_nodes and clean_t:
+                                    seen_nodes.add(full_nurl)
+                                    editions.append((clean_t, full_nurl))
+                            found_probe = True
+                            break
+                if found_probe:
+                    break
+
         # 收集待筛选的文章列表：[(版面名, 文章标题, 文章完整URL)]
         candidate_articles = []
         seen_art_urls = set()
@@ -138,7 +172,8 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
         def add_candidate(ename, atitle, aurl):
             clean_t = re.sub(r'<[^>]+>', '', atitle).strip()
             clean_t = re.sub(r'\s+', ' ', clean_t)
-            if 5 <= len(clean_t) <= 150 and aurl not in seen_art_urls:
+            # 放宽标题限制为 2~150 字，允许抓取《公告》《声明》《法院公告》《拍卖公告》《送达公告》《破产公告》等
+            if 2 <= len(clean_t) <= 150 and aurl not in seen_art_urls:
                 seen_art_urls.add(aurl)
                 candidate_articles.append((ename, clean_t, aurl))
 
@@ -166,15 +201,15 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
                     href_m = re.search(r'href=["\']([^"\']+)["\']', a_tag, re.I)
                     title_m = re.search(r'title=["\']([^"\']+)["\']', a_tag, re.I)
                     inner_text = re.sub(r'<[^>]+>', '', a_tag).strip()
-                    cand_title = title_m.group(1).strip() if (title_m and len(title_m.group(1).strip()) >= 5) else inner_text
-                    if href_m and len(cand_title) >= 5:
+                    cand_title = title_m.group(1).strip() if (title_m and len(title_m.group(1).strip()) >= 2) else inner_text
+                    if href_m and len(cand_title) >= 2:
                         add_candidate(ename, cand_title, urljoin(eurl, href_m.group(1)))
         else:
             # 兼容普通新闻门户或单页版面：解析全页超链接
             links = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', seed_html, re.I | re.S)
             for href, text in links:
                 clean_text = re.sub(r'<[^>]+>', '', text).strip()
-                if len(clean_text) >= 5:
+                if len(clean_text) >= 2:
                     add_candidate("数字报刊", clean_text, urljoin(current_issue_url, href))
 
         # 3. 严格匹配法治、司法、拍卖、债权及法定公告（双因子主体+动作强校验，彻底剔除招聘、市集、外链等无关内容）
@@ -219,11 +254,23 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
             if is_vehicle_or_equipment_item(title, body_text):
                 continue
 
-            raw_id = f"paper_{seed.id}_{stable_hash(title)}"
-
             # 从正文/标题智能提取真实法院或债权处置机构；未提取到时标记为报纸公告版，严禁伪造“XX地方人民法院”
             court_m = re.search(r'([^\s，。、（]{2,15}(?:人民法院|中级法院|基层法院|法庭|金融资产管理公司|破产管理人|拍卖行|产权交易中心))', check_text)
-            court_name = court_m.group(1) if court_m else f"《{seed.paper_name}》公告版"
+            extracted_court = court_m.group(1) if court_m else ""
+            court_name = extracted_court or f"《{seed.paper_name}》公告版"
+
+            # 若原标题少于 6 个字（如仅写《法院公告》《声明》），用提取到的法院名或正文首句补全标题，并将完整正文存入 content_text
+            if len(title) < 6:
+                first_sent = re.split(r'[。！!;\n]', body_text.strip())[0].strip() if body_text else ""
+                if extracted_court:
+                    if first_sent and len(first_sent) > len(title):
+                        title = f"{extracted_court}：{first_sent[:45]}"
+                    else:
+                        title = f"{extracted_court}{title}"
+                elif first_sent and len(first_sent) >= 6:
+                    title = first_sent[:50]
+                else:
+                    title = f"《{seed.paper_name}》{title}"
 
             # 严格案号抽取（正文联合检索）
             case_number = extract_judicial_case_number(check_text) or ""
@@ -297,10 +344,13 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
             else:
                 paper_date = datetime.now()
 
-            # 时效门禁校验：严格以当天最新刊发为主，过滤超出 3 天的历史往期废旧版面
+            # 时效门禁校验：严格以最新刊发为主，放宽至 7 天容错以覆盖周末与休刊期
             days_diff = (datetime.now() - paper_date).total_seconds() / 86400.0
-            if days_diff > 3.0:
+            if days_diff > 7.0:
                 continue
+
+            # 使用补全后的 title 生成唯一 raw_id
+            raw_id = f"paper_{seed.id}_{stable_hash(title)}"
 
             results.append({
                 "platform": "local_paper",
@@ -326,9 +376,10 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
     return results
 
 from backend.database import SessionLocal
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def scan_monitored_papers(db: Optional[Session] = None, max_papers: int = 50) -> Tuple[List[CourtNotice], int]:
-    """巡检所有已开启监控的地方数字报（全量扫描河南 18 地市所有报纸与全国重点大报）"""
+    """巡检所有已开启监控的地方数字报（全量并发扫描河南 18 地市所有报纸与全国重点大报）"""
     # 1. 快速读取监控种子（瞬时会话，严禁跨网络请求持有）
     class SeedInfo:
         def __init__(self, id, paper_name, province, city, epaper_url):
@@ -350,11 +401,18 @@ def scan_monitored_papers(db: Optional[Session] = None, max_papers: int = 50) ->
     except Exception as e:
         print(f"[local_paper_crawler] Seed fetch error: {e}")
 
-    # 2. 网络抓取阶段：完全在 DB 会话之外执行
+    # 2. 网络抓取阶段：使用 ThreadPoolExecutor(max_workers=8) 并发扫描各报社种子
     scanned_results = []
-    for seed in seeds_info:
-        items = scan_single_paper(seed)
-        scanned_results.append((seed.id, items))
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="paper_worker") as executor:
+        future_to_seed = {executor.submit(scan_single_paper, seed): seed for seed in seeds_info}
+        for future in as_completed(future_to_seed):
+            seed = future_to_seed[future]
+            try:
+                items = future.result()
+                scanned_results.append((seed.id, items))
+            except Exception as e:
+                print(f"[local_paper_crawler] Error scanning seed {seed.id} ({seed.paper_name}): {e}")
+                scanned_results.append((seed.id, []))
 
     # 3. 集中入库与状态更新：短事务
     new_records = []

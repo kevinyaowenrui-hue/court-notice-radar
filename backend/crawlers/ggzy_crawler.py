@@ -17,7 +17,7 @@ import json
 import re
 import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 
 NO_WINDOW_FLAGS = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000) if os.name == 'nt' else 0
 from typing import List, Tuple, Optional
@@ -33,10 +33,34 @@ from backend.utils import (
 SSL_CTX = ssl.create_default_context()
 SSL_CTX.check_hostname = False
 SSL_CTX.verify_mode = ssl.CERT_NONE
+try:
+    SSL_CTX.set_ciphers('DEFAULT@SECLEVEL=1')
+except Exception:
+    pass
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
 }
+
+def safe_curl_or_urllib(url: str, post_data: Optional[str] = None, headers: Optional[dict] = None, timeout: int = 12) -> str:
+    """
+    优先使用 curl.exe -k 发起网络请求；
+    当 curl.exe 调用失败或异常时，自动优雅降级为原生 urllib.request（支持 DEFAULT@SECLEVEL=1 算法握手）
+    """
+    req_headers = {**HEADERS, **(headers or {})}
+    try:
+        cmd = ['curl.exe', '-k', '-s']
+        if post_data is not None:
+            cmd.extend(['-X', 'POST', '-d', post_data])
+        for k, v in req_headers.items():
+            cmd.extend(['-H', f"{k}: {v}"])
+        cmd.append(url)
+        return subprocess.check_output(cmd, timeout=timeout, creationflags=NO_WINDOW_FLAGS).decode('utf-8', errors='ignore')
+    except Exception:
+        data_bytes = post_data.encode('utf-8') if post_data is not None else None
+        req = urllib.request.Request(url, data=data_bytes, headers=req_headers)
+        with urllib.request.urlopen(req, context=SSL_CTX, timeout=timeout) as resp:
+            return resp.read().decode('utf-8', errors='ignore')
 
 def extract_prices_and_times_from_html(html_content: str, title: str = "") -> Tuple[Optional[float], Optional[float], Optional[datetime], Optional[datetime]]:
     """从公共资源交易公告正文与HTML表格中智能提取起拍价/挂牌底价、评估价/参考价及竞价时间"""
@@ -146,11 +170,12 @@ def fetch_shangqiu_cqjy(max_pages: int = 2) -> List[dict]:
         }
 
         today_str = datetime.now().strftime("%Y-%m-%d")
-        # 抓取 noticType=1 (转让公告) 和 noticType=3 (结果公告)，锁定今日最新
+        begin_str = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+        # 抓取 noticType=1 (转让公告) 和 noticType=3 (结果公告)，放宽至近3天防止跨夜或跨周末漏采
         for notic_type in ['1', '3']:
             for p in range(1, max_pages + 1):
                 body = (
-                    f"projectName=&date=today&begin_time={today_str}&end_time={today_str}&begin_time2=&end_time2="
+                    f"projectName=&date=&begin_time={begin_str}&end_time={today_str}&begin_time2=&end_time2="
                     f"&dealType=Deal_Type7&noticType={notic_type}&area=&huanJie=NOTICE&pageIndex={p}"
                 )
                 req = urllib.request.Request(
@@ -265,14 +290,11 @@ def fetch_henan_provincial_cqjy(page_size: int = 30, kw: str = "") -> List[dict]
             f"siteGuid=7eb5f7f1-9041-43ad-8e13-8fcb82ea831a&categoryNum=002003"
             f"&kw={kw}&startDate=&endDate=&pageIndex=0&pageSize={page_size}&jytype=&YZM=&ImgGuid=&xiaqucode="
         )
-        cmd = [
-            'curl.exe', '-k', '-s', '-X', 'POST',
-            '-d', post_data,
-            '-H', 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8',
-            '-H', 'Referer: https://hnsggzyjy.henan.gov.cn/jyxx/002003/transaction_notice.html',
-            url
-        ]
-        out = subprocess.check_output(cmd, timeout=12, creationflags=NO_WINDOW_FLAGS).decode('utf-8', errors='ignore')
+        req_headers = {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Referer': 'https://hnsggzyjy.henan.gov.cn/jyxx/002003/transaction_notice.html'
+        }
+        out = safe_curl_or_urllib(url, post_data=post_data, headers=req_headers, timeout=12)
         data = json.loads(out)
         items = data.get('custom', {}).get('infodata', [])
 
@@ -301,12 +323,12 @@ def fetch_henan_provincial_cqjy(page_size: int = 30, kw: str = "") -> List[dict]
                     if days_diff > 3.0:
                         continue
 
-                # 穿透详情页抓取起拍价、评估价及竞价时间（因省网SSL特性，采用curl安全获取）
+                # 穿透详情页抓取起拍价、评估价及竞价时间（优先curl，自动降级urllib）
                 sp, ep, bs, be = None, None, None, None
                 try:
-                    cmd_d = ['curl.exe', '-k', '-s', detail_url]
-                    d_html = subprocess.check_output(cmd_d, timeout=12, creationflags=NO_WINDOW_FLAGS).decode('utf-8', errors='ignore')
-                    sp, ep, bs, be = extract_prices_and_times_from_html(d_html, title)
+                    d_html = safe_curl_or_urllib(detail_url, timeout=12)
+                    if d_html:
+                        sp, ep, bs, be = extract_prices_and_times_from_html(d_html, title)
                 except Exception:
                     pass
 
@@ -442,14 +464,11 @@ def fetch_zhengzhou_cqjy(page_size: int = 25) -> List[dict]:
             "searchRange": [],
             "isBusiness": "1"
         }
-        cmd = [
-            'curl.exe', '-k', '-s', '-X', 'POST',
-            '-d', json.dumps(payload),
-            '-H', 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8',
-            '-H', 'Referer: https://zzggzy.zhengzhou.gov.cn/cqjy/subpage.html',
-            url
-        ]
-        out = subprocess.check_output(cmd, timeout=12, creationflags=NO_WINDOW_FLAGS).decode('utf-8', errors='ignore')
+        req_headers = {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Referer': 'https://zzggzy.zhengzhou.gov.cn/cqjy/subpage.html'
+        }
+        out = safe_curl_or_urllib(url, post_data=json.dumps(payload), headers=req_headers, timeout=12)
         data = json.loads(out)
         records = data.get('result', {}).get('records', [])
 

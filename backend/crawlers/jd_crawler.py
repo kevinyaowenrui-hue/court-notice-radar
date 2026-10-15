@@ -318,9 +318,20 @@ def parse_jd_api_item(d: dict, max_days: int = 3) -> dict:
         except Exception:
             pass
 
-    # 拍卖阶段
+    # 拍卖阶段（优先依据底层 API 字段 paimaiStage / stage，其次标题）
+    stage_val = d.get("paimaiStage") or d.get("stage")
     auction_stage = "一拍"
-    if "二拍" in title:
+    if stage_val is not None:
+        stage_str = str(stage_val)
+        if "2" in stage_str or "二" in stage_str:
+            auction_stage = "二拍"
+        elif "3" in stage_str or "变卖" in stage_str:
+            auction_stage = "变卖"
+        elif "破产" in stage_str:
+            auction_stage = "破产清算"
+        elif "1" in stage_str or "一" in stage_str:
+            auction_stage = "一拍"
+    elif "二拍" in title:
         auction_stage = "二拍"
     elif "变卖" in title:
         auction_stage = "变卖"
@@ -354,10 +365,15 @@ def parse_jd_api_item(d: dict, max_days: int = 3) -> dict:
     if house_attrs.get("averagePrice"):
         avg_price_desc = f"{house_attrs.get('averagePrice')}"
 
-    # 属地与城市
+    # 属地与城市及处置法院（优先使用底层 API 返回的 courtName）
     province = d.get("province") or ""
     city = d.get("city") or ""
-    court_name, disposer = infer_court_and_disposer(title, city, province)
+    court_api = d.get("courtName") or d.get("vendorName") or d.get("shopName")
+    if court_api:
+        court_name = court_api
+        disposer = court_api
+    else:
+        court_name, disposer = infer_court_and_disposer(title, city, province)
 
     # 涉豫判定（强化标题、处置机构与正文地市识别）
     is_henan = False
@@ -489,13 +505,35 @@ async def fetch_jd_real_auctions() -> List[dict]:
         page = await context.new_page()
 
         async def on_response(response):
-            if 'getSearchData' in response.url:
+            url = response.url
+            if any(k in url for k in ['getSearchData', 'search', 'query', 'paimaiId']):
                 try:
-                    res = await response.json()
-                    rd = res.get('data', {}).get('resultData', [])
-                    for item in rd:
-                        d = item.get('data', {})
-                        if d and d.get('paimaiId'):
+                    text = await response.text()
+                    if not text:
+                        return
+                    clean_text = text.strip()
+                    if clean_text.startswith('jQuery') or ('(' in clean_text and clean_text.endswith(')')):
+                        s = clean_text.find('(')
+                        e = clean_text.rfind(')')
+                        clean_text = clean_text[s+1:e]
+                    res = json.loads(clean_text)
+                    items_to_parse = []
+                    if isinstance(res, dict):
+                        rd = res.get('data')
+                        if isinstance(rd, dict):
+                            items_to_parse.extend(rd.get('resultData', []))
+                            items_to_parse.extend(rd.get('datas', []))
+                            items_to_parse.extend(rd.get('items', []))
+                        elif isinstance(rd, list):
+                            items_to_parse.extend(rd)
+                        if 'resultData' in res and isinstance(res['resultData'], list):
+                            items_to_parse.extend(res['resultData'])
+                    elif isinstance(res, list):
+                        items_to_parse.extend(res)
+
+                    for item in items_to_parse:
+                        d = item.get('data') if isinstance(item, dict) and 'data' in item and isinstance(item['data'], dict) else item
+                        if isinstance(d, dict) and (d.get('paimaiId') or d.get('id')):
                             parsed = parse_jd_api_item(d)
                             if parsed and parsed["raw_id"] not in results_map:
                                 results_map[parsed["raw_id"]] = parsed

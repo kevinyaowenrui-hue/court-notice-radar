@@ -6,6 +6,8 @@
 """
 import asyncio
 import re
+import json
+import random
 from datetime import datetime
 from typing import List, Tuple, Optional
 from playwright.async_api import async_playwright
@@ -70,6 +72,8 @@ async def fetch_ali_real_auctions() -> List[dict]:
             ("https://sf.taobao.com/item_list.htm?province=%BA%D3%C4%CF&order=createTime_desc", "阿里法拍·河南最新"),
             ("https://sf.taobao.com/item_list.htm?q=%D6%A3%D6%DD&order=createTime_desc", "阿里法拍·郑州重点"),
             ("https://sf.taobao.com/item_list.htm?q=%C2%E5%D1%F4&order=createTime_desc", "阿里法拍·洛阳重点"),
+            ("https://sf.taobao.com/item_list.htm?q=%D0%C2%CF%E7&order=createTime_desc", "阿里法拍·新乡重点"),
+            ("https://sf.taobao.com/item_list.htm?q=%C4%CF%D1%F4&order=createTime_desc", "阿里法拍·南阳重点"),
             ("https://sf.taobao.com/?order=createTime_desc", "阿里法拍·全国大盘最新")
         ]
 
@@ -81,9 +85,11 @@ async def fetch_ali_real_auctions() -> List[dict]:
         try:
             for target_url, url_type in target_urls:
                 try:
+                    # 防风控随机平滑等待 3.5 ~ 6 秒
+                    await page.wait_for_timeout(random.randint(3500, 6000))
                     print(f"[ali_crawler] Accessing {url_type}: {target_url}")
                     await page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
-                    await page.wait_for_timeout(3000)
+                    await page.wait_for_timeout(2500)
 
                     # 风控与验证码拦截特征检测
                     current_url = page.url
@@ -100,9 +106,126 @@ async def fetch_ali_real_auctions() -> List[dict]:
                         warning_reasons.append(f"[{url_type}] 页面提示安全验证: {page_title}")
                         continue
 
+                    # 1. 优先定位 <script id="sf-item-list-data" type="text/json"> 节点提取结构化完整数据
+                    json_parsed_success = False
+                    try:
+                        script_el = await page.query_selector("script#sf-item-list-data")
+                        if script_el:
+                            script_content = await script_el.inner_text()
+                            if script_content:
+                                sf_json = json.loads(script_content)
+                                sf_data = sf_json.get("data", [])
+                                if isinstance(sf_data, list) and sf_data:
+                                    print(f"[ali_crawler] [{url_type}] Located sf-item-list-data JSON with {len(sf_data)} items")
+                                    for d in sf_data:
+                                        p_id = str(d.get("id") or "")
+                                        if not p_id:
+                                            continue
+                                        raw_id = f"ali_{p_id}"
+                                        if raw_id in seen_raw_ids:
+                                            continue
+                                        seen_raw_ids.add(raw_id)
+                                        clean_url = f"https://sf-item.taobao.com/sf_item/{p_id}.htm"
+                                        seen_urls.add(clean_url)
+
+                                        title = (d.get("title") or "").strip()
+                                        if not title or is_vehicle_or_equipment_item(title):
+                                            continue
+
+                                        # 起拍价与评估价（若评估价等于起拍价则置 None）
+                                        sp = d.get("initialPrice")
+                                        ep = d.get("consultPrice")
+                                        try:
+                                            sp = float(sp) if sp is not None else None
+                                        except Exception:
+                                            sp = None
+                                        try:
+                                            ep = float(ep) if ep is not None else None
+                                        except Exception:
+                                            ep = None
+                                        if sp is not None and ep is not None and sp == ep:
+                                            ep = None
+
+                                        # 毫秒时间戳转换开拍与结束时间
+                                        b_start = None
+                                        b_end = None
+                                        if d.get("start"):
+                                            try:
+                                                b_start = datetime.fromtimestamp(int(d["start"]) / 1000)
+                                            except Exception:
+                                                pass
+                                        if d.get("end"):
+                                            try:
+                                                b_end = datetime.fromtimestamp(int(d["end"]) / 1000)
+                                            except Exception:
+                                                pass
+
+                                        court_name = (d.get("court") or d.get("courtName") or "").strip()
+                                        if not court_name:
+                                            c_m = re.search(r'([^\s，。、（]{2,15}(?:人民法院|中级法院|基层法院|法庭))', title)
+                                            court_name = c_m.group(1) if c_m else "阿里司法拍卖"
+
+                                        case_number = extract_judicial_case_number(title) or ""
+
+                                        stage = "一拍"
+                                        st_desc = d.get("statusTitle") or ""
+                                        if "二拍" in title or "第二次" in title or "二拍" in st_desc:
+                                            stage = "二拍"
+                                        elif "变卖" in title or "变卖" in st_desc:
+                                            stage = "变卖"
+                                        elif "破产" in title:
+                                            stage = "破产资产处置"
+
+                                        category = "住宅/商业房产"
+                                        if any(k in title for k in ['地块', '土地', '厂房', '仓库', '工业园']):
+                                            category = "工业厂房与土地"
+                                        elif any(k in title for k in ['股权', '股份', '股票', '债权']):
+                                            category = "金融债权与股权"
+
+                                        content_text = (
+                                            f"标的物名称：{title}\n"
+                                            f"执行/处置法院：{court_name}\n"
+                                            f"起拍价：{sp}元\n评估价：{ep}元\n"
+                                            f"拍卖阶段：{stage}\n"
+                                            f"竞价开始时间：{b_start}\n竞价结束时间：{b_end}\n"
+                                            f"详情链接：{clean_url}"
+                                        )
+
+                                        is_henan, henan_city, henan_tag = detect_henan_info(title, court_name, content_text)
+
+                                        results.append({
+                                            "platform": "ali",
+                                            "raw_id": raw_id,
+                                            "court_name": court_name,
+                                            "case_number": case_number,
+                                            "parties": "",
+                                            "notice_type": "司法拍卖",
+                                            "module_type": "拍卖公告",
+                                            "title": title,
+                                            "content_text": content_text,
+                                            "publish_time": datetime.now(),
+                                            "source_url": clean_url,
+                                            "starting_price": sp,
+                                            "eval_price": ep,
+                                            "auction_stage": stage,
+                                            "asset_category": category,
+                                            "bidding_start": b_start,
+                                            "bidding_end": b_end,
+                                            "is_henan": is_henan,
+                                            "henan_city": henan_city,
+                                            "henan_tag": henan_tag
+                                        })
+                                    json_parsed_success = True
+                    except Exception as je:
+                        print(f"[ali_crawler] JSON extraction error: {je}")
+
+                    # 2. 若内嵌 JSON 未获取成功，平滑回退至 DOM 节点选择器解析
+                    if json_parsed_success:
+                        continue
+
                     # 查询页面上的法拍卡片链接
                     cards = await page.query_selector_all("a[href*='sf_item'], a[href*='sf-item.taobao.com/sf_item']")
-                    print(f"[ali_crawler] [{url_type}] Found {len(cards)} sf_item links")
+                    print(f"[ali_crawler] [{url_type}] DOM fallback: Found {len(cards)} sf_item links")
                     if len(cards) == 0 and not warning_reasons:
                         warning_reasons.append(f"[{url_type}] 页面未发现法拍卡片元素，可能页面结构变更或遭遇防爬限制")
 
@@ -258,12 +381,6 @@ async def fetch_ali_real_auctions() -> List[dict]:
             if browser:
                 try:
                     await browser.close()
-                except Exception:
-                    pass
-            if warning_reasons and os.path.exists(user_data_dir):
-                import shutil
-                try:
-                    shutil.rmtree(user_data_dir, ignore_errors=True)
                 except Exception:
                     pass
     warning_msg = " ; ".join(warning_reasons) if warning_reasons else None

@@ -194,7 +194,7 @@ def fetch_detail_data(url: str, title: str = "") -> Dict[str, Any]:
     
     html_src = ""
     try:
-        with urllib.request.urlopen(req, context=_SSL_CTX, timeout=10) as resp:
+        with urllib.request.urlopen(req, context=_SSL_CTX, timeout=8) as resp:
             content = resp.read()
             try:
                 html_src = content.decode('utf-8')
@@ -271,7 +271,11 @@ def fetch_detail_data(url: str, title: str = "") -> Dict[str, Any]:
         category = "金融债权与股权"
 
     # 提取案号（严格司法案号规范，排除不动产权证号与租赁编号）
-    case_number = extract_judicial_case_number(text) or ""
+    case_number = extract_judicial_case_number(f"{title} {text}") or ""
+    if not case_number:
+        cn_m = re.search(r'[(（][12]\d{3}[)）]\s*[\u4e00-\u9fa5]{1,6}\d{1,6}[\u4e00-\u9fa5]{1,6}\d{1,8}\s*号?', text)
+        if cn_m:
+            case_number = cn_m.group(0).replace(' ', '').replace('(', '（').replace(')', '）')
 
     return {
         'starting_price': price,
@@ -296,15 +300,11 @@ def crawl_rmfysszc_notices(db: Optional[Session] = None, max_pages: int = 2) -> 
     all_raw_items = []
     seen_ids = set()
 
-    # 多维定向搜索词：保证河南属地全覆盖 + 全国最新一拍二拍房产
+    # 多维定向搜索词：覆盖河南全部18地市 + 全国大盘与一拍二拍房产
     search_keywords = [
-        "",         # 全网最新发布第一页和第二页（捕获今日全国刚上拍标的）
-        "河南",     # 河南专属定向
-        "郑州",     # 郑州重点定向
-        "洛阳",     # 洛阳重点定向
-        "房产",     # 房产专项
-        "第一次拍卖",# 一拍专项
-        "第二次拍卖" # 二拍专项
+        "", "河南", "郑州", "洛阳", "南阳", "商丘", "开封", "平顶山", "安阳", "新乡",
+        "焦作", "许昌", "周口", "驻马店", "信阳", "漯河", "濮阳", "鹤壁", "三门峡", "济源",
+        "房产", "第一次拍卖", "第二次拍卖"
     ]
 
     for kw in search_keywords:

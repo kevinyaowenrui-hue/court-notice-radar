@@ -191,6 +191,18 @@ def fetch_caa_items(count: int = 30, filter_content: str = "") -> List[dict]:
                         if is_henan and not henan_tag:
                             henan_tag = f"中拍平台涉豫信息公示 (涉及{henan_city})"
 
+                        # 拍卖阶段提取 (从标题、正文及标的名称中深度提取)
+                        auction_stage = "一拍"
+                        stage_target = f"{title} {lot_name} {notice_content}"
+                        if "二拍" in stage_target or "第二次" in stage_target:
+                            auction_stage = "二拍"
+                        elif "变卖" in stage_target:
+                            auction_stage = "变卖"
+                        elif "破产" in stage_target:
+                            auction_stage = "破产资产处置"
+                        elif "一拍" in stage_target or "第一次" in stage_target:
+                            auction_stage = "一拍"
+
                         results.append({
                             "raw_id": f"caa_{pid}",
                             "court_name": court_name,
@@ -203,6 +215,7 @@ def fetch_caa_items(count: int = 30, filter_content: str = "") -> List[dict]:
                             "source_url": detail_url,
                             "starting_price": starting_price,
                             "eval_price": eval_price,
+                            "auction_stage": auction_stage,
                             "bidding_start": bidding_start,
                             "bidding_end": bidding_end,
                             "asset_category": category,
@@ -314,6 +327,18 @@ def fetch_caa_lots(province_code: str = "410000", count: int = 40, filter_name: 
                         henan_city = h_c or "省直/全省处置"
                         henan_tag = h_t or f"中拍平台涉豫标的 (涉及{henan_city})"
 
+                    # 拍卖阶段提取 (从标题与专场名称中提取)
+                    auction_stage = "一拍"
+                    stage_target = f"{title} {meet_name}"
+                    if "二拍" in stage_target or "第二次" in stage_target:
+                        auction_stage = "二拍"
+                    elif "变卖" in stage_target:
+                        auction_stage = "变卖"
+                    elif "破产" in stage_target:
+                        auction_stage = "破产资产处置"
+                    elif "一拍" in stage_target or "第一次" in stage_target:
+                        auction_stage = "一拍"
+
                     results.append({
                         "raw_id": f"caa_lot_{lot_id}",
                         "court_name": company or "中拍平台",
@@ -326,6 +351,7 @@ def fetch_caa_lots(province_code: str = "410000", count: int = 40, filter_name: 
                         "source_url": detail_url,
                         "starting_price": starting_price,
                         "eval_price": eval_price,
+                        "auction_stage": auction_stage,
                         "bidding_start": bidding_start,
                         "bidding_end": bidding_end,
                         "asset_category": category,
@@ -360,12 +386,14 @@ def fetch_caa_real_publicity() -> Tuple[List[dict], Optional[str]]:
             seen_ids.add(it["raw_id"])
             all_items.append(it)
 
-    # 3. 抓取最新全国与河南公示（补充成交结果与资产处置公告）
-    publicity_items = fetch_caa_items(count=20, filter_content="")
-    for it in publicity_items:
-        if it["raw_id"] not in seen_ids:
-            seen_ids.add(it["raw_id"])
-            all_items.append(it)
+    # 3. 轮询河南及重点地市 filterContent 抓取信息公示（补充成交结果与资产处置公告）
+    filter_keywords = ["", "河南", "郑州", "洛阳", "南阳", "商丘", "开封", "新乡"]
+    for kw in filter_keywords:
+        publicity_items = fetch_caa_items(count=20, filter_content=kw)
+        for it in publicity_items:
+            if it["raw_id"] not in seen_ids:
+                seen_ids.add(it["raw_id"])
+                all_items.append(it)
 
     return all_items, None
 
@@ -409,6 +437,7 @@ def crawl_caa_publicity(db: Optional[Session] = None, max_items: int = 50) -> Tu
                     source_url=it["source_url"],
                     starting_price=it.get("starting_price"),
                     eval_price=it.get("eval_price"),
+                    auction_stage=it.get("auction_stage"),
                     bidding_start=it.get("bidding_start"),
                     bidding_end=it.get("bidding_end"),
                     asset_category=it.get("asset_category"),
@@ -424,6 +453,8 @@ def crawl_caa_publicity(db: Optional[Session] = None, max_items: int = 50) -> Tu
                     existing.starting_price = it["starting_price"]
                 if it.get("eval_price") is not None:
                     existing.eval_price = it["eval_price"]
+                if it.get("auction_stage") and (not existing.auction_stage or existing.auction_stage == '司法拍卖'):
+                    existing.auction_stage = it["auction_stage"]
                 if it.get("bidding_start") is not None:
                     existing.bidding_start = it["bidding_start"]
                 if it.get("bidding_end") is not None:
