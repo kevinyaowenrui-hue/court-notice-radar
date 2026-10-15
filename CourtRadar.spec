@@ -79,7 +79,9 @@ hiddenimports = [
     'backend.crawlers.ggzy_crawler',
     'backend.crawlers.local_paper_crawler',
     'backend.crawlers.seed_53bk',
-    'backend.crawlers.rmfysszc_crawler'
+    'backend.crawlers.rmfysszc_crawler',
+    'backend.crawlers.seed_local_paper_archive',
+    'backend.crawlers.seed_local_paper_phase2'
 ]
 
 a = Analysis(
