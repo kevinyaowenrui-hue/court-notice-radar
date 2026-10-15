@@ -39,6 +39,7 @@ data/*.db-wal
 data/*.db-shm
 data/*.corrupted.*
 data/*.bak
+data/ali_profile/
 
 # OS & Editor
 .DS_Store

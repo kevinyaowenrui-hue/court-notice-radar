@@ -15,7 +15,10 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from backend.models import CourtNotice
-from backend.utils import detect_henan_info, categorize_notice_module, extract_judicial_case_number
+from backend.utils import (
+    detect_henan_info, categorize_notice_module, extract_judicial_case_number,
+    extract_starting_and_eval_price
+)
 
 # SSL 上下文（忽略过期/自签名证书）
 _SSL_CTX = ssl.create_default_context()

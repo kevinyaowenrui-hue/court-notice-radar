@@ -187,14 +187,18 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
     recent_alerts = db.query(AlertEvent).order_by(desc(AlertEvent.created_at)).limit(5).all()
 
     today_start = datetime.combine(datetime.now().date(), dt_time.min)
-    effective_time = func.coalesce(CourtNotice.publish_time, CourtNotice.created_at)
-    today_filter = effective_time >= today_start
-    today_notices_count = db.query(CourtNotice).filter(today_filter).count()
-    today_henan_notices_count = db.query(CourtNotice).filter(today_filter, CourtNotice.is_henan == True).count()
-    today_alerts_count = db.query(AlertEvent).join(CourtNotice, AlertEvent.notice_id == CourtNotice.id).filter(today_filter).count()
-    today_henan_alerts_count = db.query(AlertEvent).join(CourtNotice, AlertEvent.notice_id == CourtNotice.id).filter(today_filter, CourtNotice.is_henan == True).count()
-    today_unread_alerts = db.query(AlertEvent).join(CourtNotice, AlertEvent.notice_id == CourtNotice.id).filter(today_filter, AlertEvent.is_read == False).count()
-    today_henan_unread_alerts = db.query(AlertEvent).join(CourtNotice, AlertEvent.notice_id == CourtNotice.id).filter(today_filter, CourtNotice.is_henan == True, AlertEvent.is_read == False).count()
+    notice_today_filter = or_(CourtNotice.publish_time >= today_start, CourtNotice.created_at >= today_start)
+    today_notices_count = db.query(CourtNotice).filter(notice_today_filter).count()
+    today_henan_notices_count = db.query(CourtNotice).filter(notice_today_filter, CourtNotice.is_henan == True).count()
+    alert_today_filter = or_(
+        AlertEvent.created_at >= today_start,
+        CourtNotice.created_at >= today_start,
+        CourtNotice.publish_time >= today_start
+    )
+    today_alerts_count = db.query(AlertEvent).join(CourtNotice, AlertEvent.notice_id == CourtNotice.id).filter(alert_today_filter).count()
+    today_henan_alerts_count = db.query(AlertEvent).join(CourtNotice, AlertEvent.notice_id == CourtNotice.id).filter(alert_today_filter, CourtNotice.is_henan == True).count()
+    today_unread_alerts = db.query(AlertEvent).join(CourtNotice, AlertEvent.notice_id == CourtNotice.id).filter(alert_today_filter, AlertEvent.is_read == False).count()
+    today_henan_unread_alerts = db.query(AlertEvent).join(CourtNotice, AlertEvent.notice_id == CourtNotice.id).filter(alert_today_filter, CourtNotice.is_henan == True, AlertEvent.is_read == False).count()
 
     return {
         "total_notices": total_notices,
@@ -250,17 +254,34 @@ def get_alerts(
     if henan_city:
         scope_query = scope_query.filter(CourtNotice.henan_city == henan_city)
 
-    # 时效过滤胶囊（以当天最新发布为主，严格保障标的发布时效）
-    effective_time = func.coalesce(CourtNotice.publish_time, CourtNotice.created_at)
+    # 时效过滤胶囊（预警触发时间或关联标的发布/入库时间满足范围）
     if time_range == "today":
         today_start = datetime.combine(datetime.now().date(), dt_time.min)
-        scope_query = scope_query.filter(effective_time >= today_start)
+        scope_query = scope_query.filter(
+            or_(
+                AlertEvent.created_at >= today_start,
+                CourtNotice.created_at >= today_start,
+                CourtNotice.publish_time >= today_start
+            )
+        )
     elif time_range == "3days":
         cutoff = datetime.combine((datetime.now() - timedelta(days=3)).date(), dt_time.min)
-        scope_query = scope_query.filter(effective_time >= cutoff)
+        scope_query = scope_query.filter(
+            or_(
+                AlertEvent.created_at >= cutoff,
+                CourtNotice.created_at >= cutoff,
+                CourtNotice.publish_time >= cutoff
+            )
+        )
     elif time_range == "7days":
         cutoff = datetime.combine((datetime.now() - timedelta(days=7)).date(), dt_time.min)
-        scope_query = scope_query.filter(effective_time >= cutoff)
+        scope_query = scope_query.filter(
+            or_(
+                AlertEvent.created_at >= cutoff,
+                CourtNotice.created_at >= cutoff,
+                CourtNotice.publish_time >= cutoff
+            )
+        )
 
     # 1. 动态聚合当前时效/地域下的各数据源渠道预警数（7大平台全景，联动当前选中的业务模块）
     plat_query = scope_query
@@ -322,14 +343,14 @@ def get_alerts(
         actual_limit = actual_page_size
 
     total_pages = max(1, (total + actual_page_size - 1) // actual_page_size)
-    # 核心重构：严格按标的发布时间倒序排在最前，次级按预警触发时间
-    items = query.order_by(desc(effective_time), desc(AlertEvent.created_at)).offset(actual_offset).limit(actual_limit).all()
+    # 核心重构：预警触发时间最新优先呈现，次级按标的入库时间倒序
+    items = query.order_by(desc(AlertEvent.created_at), desc(CourtNotice.created_at)).offset(actual_offset).limit(actual_limit).all()
 
     result = []
     for alert, notice in items:
         discount = round((notice.starting_price / notice.eval_price) * 10, 1) if (notice.starting_price and notice.eval_price and notice.eval_price > 0) else None
         eff_dt = notice.publish_time or notice.created_at
-        is_today = bool(eff_dt and eff_dt.date() == datetime.now().date())
+        is_today = bool((eff_dt and eff_dt.date() == datetime.now().date()) or (alert.created_at and alert.created_at.date() == datetime.now().date()))
         
         # 拍卖倒计时与刚上拍研判 (一拍法定30天，二拍法定15天)
         days_until = None
@@ -614,17 +635,31 @@ def export_notices(
     if henan_city:
         q = q.filter(CourtNotice.henan_city == henan_city)
 
-    # 时效过滤胶囊（以当天最新发布为主，兼容入库时效）
-    effective_time = func.coalesce(CourtNotice.publish_time, CourtNotice.created_at)
+    # 时效过滤胶囊（标的发布时间或采集入库时间满足范围）
     if time_range == "today":
         today_start = datetime.combine(datetime.now().date(), dt_time.min)
-        q = q.filter(effective_time >= today_start)
+        q = q.filter(
+            or_(
+                CourtNotice.publish_time >= today_start,
+                CourtNotice.created_at >= today_start
+            )
+        )
     elif time_range == "3days":
-        cutoff = datetime.now() - timedelta(days=3)
-        q = q.filter(effective_time >= cutoff)
+        cutoff = datetime.combine((datetime.now() - timedelta(days=3)).date(), dt_time.min)
+        q = q.filter(
+            or_(
+                CourtNotice.publish_time >= cutoff,
+                CourtNotice.created_at >= cutoff
+            )
+        )
     elif time_range == "7days":
-        cutoff = datetime.now() - timedelta(days=7)
-        q = q.filter(effective_time >= cutoff)
+        cutoff = datetime.combine((datetime.now() - timedelta(days=7)).date(), dt_time.min)
+        q = q.filter(
+            or_(
+                CourtNotice.publish_time >= cutoff,
+                CourtNotice.created_at >= cutoff
+            )
+        )
 
     if price_min is not None:
         q = q.filter(CourtNotice.starting_price >= price_min)
@@ -741,17 +776,32 @@ def get_notices(
     if henan_city:
         scope_q = scope_q.filter(CourtNotice.henan_city == henan_city)
 
-    # 时效过滤胶囊（以当天最新发布为主，严格保障标的发布时效）
     effective_time = func.coalesce(CourtNotice.publish_time, CourtNotice.created_at)
+    # 时效过滤胶囊（标的发布时间或采集入库时间满足范围）
     if time_range == "today":
         today_start = datetime.combine(datetime.now().date(), dt_time.min)
-        scope_q = scope_q.filter(effective_time >= today_start)
+        scope_q = scope_q.filter(
+            or_(
+                CourtNotice.publish_time >= today_start,
+                CourtNotice.created_at >= today_start
+            )
+        )
     elif time_range == "3days":
         cutoff = datetime.combine((datetime.now() - timedelta(days=3)).date(), dt_time.min)
-        scope_q = scope_q.filter(effective_time >= cutoff)
+        scope_q = scope_q.filter(
+            or_(
+                CourtNotice.publish_time >= cutoff,
+                CourtNotice.created_at >= cutoff
+            )
+        )
     elif time_range == "7days":
         cutoff = datetime.combine((datetime.now() - timedelta(days=7)).date(), dt_time.min)
-        scope_q = scope_q.filter(effective_time >= cutoff)
+        scope_q = scope_q.filter(
+            or_(
+                CourtNotice.publish_time >= cutoff,
+                CourtNotice.created_at >= cutoff
+            )
+        )
     if price_min is not None:
         scope_q = scope_q.filter(CourtNotice.starting_price >= price_min)
     if price_max is not None:
@@ -862,7 +912,7 @@ def get_notices(
     for n in items:
         discount = round((n.starting_price / n.eval_price) * 10, 1) if (n.starting_price and n.eval_price and n.eval_price > 0) else None
         eff_dt = n.publish_time or n.created_at
-        is_today = bool(eff_dt and eff_dt.date() == datetime.now().date())
+        is_today = bool((eff_dt and eff_dt.date() == datetime.now().date()) or (n.created_at and n.created_at.date() == datetime.now().date()))
         
         # 拍卖倒计时与刚上拍研判 (一拍法定30天，二拍法定15天)
         days_until = None

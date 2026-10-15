@@ -90,11 +90,15 @@ async def fetch_ali_real_auctions() -> List[dict]:
                     page_title = await page.title()
                     if any(k in current_url for k in ['punish', 'sec.taobao.com', 'login.taobao.com', 'rgv587']):
                         warning_reasons.append(f"[{url_type}] 触发淘宝风控安全验证重定向: {current_url}")
-                        print(f"[ali_crawler] Anti-scraping triggered on {url_type}, aborting remaining pages.")
-                        break
+                        print(f"[ali_crawler] Anti-scraping triggered on {url_type}, resetting session and continuing next.")
+                        try:
+                            await context.clear_cookies()
+                        except Exception:
+                            pass
+                        continue
                     elif any(k in page_title for k in ['验证码', '安全验证', '登录']):
                         warning_reasons.append(f"[{url_type}] 页面提示安全验证: {page_title}")
-                        break
+                        continue
 
                     # 查询页面上的法拍卡片链接
                     cards = await page.query_selector_all("a[href*='sf_item'], a[href*='sf-item.taobao.com/sf_item']")
@@ -254,6 +258,12 @@ async def fetch_ali_real_auctions() -> List[dict]:
             if browser:
                 try:
                     await browser.close()
+                except Exception:
+                    pass
+            if warning_reasons and os.path.exists(user_data_dir):
+                import shutil
+                try:
+                    shutil.rmtree(user_data_dir, ignore_errors=True)
                 except Exception:
                     pass
     warning_msg = " ; ".join(warning_reasons) if warning_reasons else None

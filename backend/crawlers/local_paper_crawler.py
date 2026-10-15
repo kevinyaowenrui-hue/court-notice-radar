@@ -42,7 +42,7 @@ HENAN_PAPER_CITY_MAP = {
 }
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept-Language': 'zh-CN,zh;q=0.9',
 }
 
@@ -67,22 +67,28 @@ EXPANDED_LEGAL_KEYWORDS = [
     '遗失声明', '作废声明', '权属证明', '不动产权证书遗失', '首次登记公告', '催告'
 ]
 
+import ssl
+
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
+
 def fetch_paper_html(url: str, timeout: int = 8):
     try:
         req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, context=_SSL_CTX, timeout=timeout) as resp:
             real_url = resp.geturl()
             content = resp.read()
-            html = ""
+            decoded_html = ""
             for enc in ['utf-8', 'gbk', 'gb2312']:
                 try:
-                    html = content.decode(enc)
+                    decoded_html = content.decode(enc)
                     break
                 except Exception:
                     pass
-            if not html:
-                html = content.decode('gbk', errors='ignore')
-            return real_url, html
+            if not decoded_html:
+                decoded_html = content.decode('gbk', errors='ignore')
+            return real_url, decoded_html
     except Exception:
         return url, ""
 
@@ -90,19 +96,19 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
     """扫描单家地方报社官网与数字报专版，全版面深度提取真实刊登的所有相关公告"""
     results = []
     try:
-        real_url, html = fetch_paper_html(seed.epaper_url, timeout=8)
-        if not html:
+        real_url, seed_html = fetch_paper_html(seed.epaper_url, timeout=8)
+        if not seed_html:
             return results
 
         # 1. 深度穿透数字报期刊入口（处理 meta refresh / JS 跳转 / paperindex.htm 自动跳转到当期版面）
         current_issue_url = real_url
-        refresh_m = re.search(r'content=["\']0;\s*url=([^"\']+)["\']', html, re.I)
-        js_m = re.search(r'location\.href\s*=\s*["\']([^"\']+)["\']', html, re.I)
+        refresh_m = re.search(r'content=["\']0;\s*url=([^"\']+)["\']', seed_html, re.I)
+        js_m = re.search(r'location\.href\s*=\s*["\']([^"\']+)["\']', seed_html, re.I)
         if refresh_m:
             current_issue_url = urljoin(real_url, refresh_m.group(1).split('?')[0])
         elif js_m:
             current_issue_url = urljoin(real_url, js_m.group(1).split('?')[0])
-        elif "paperindex.htm" in html:
+        elif "paperindex.htm" in seed_html:
             current_issue_url = urljoin(real_url, "paperindex.htm")
 
         if current_issue_url != real_url:
@@ -110,12 +116,12 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
             # 检查二次跳转 (如 paperindex.htm 跳转到 html/node_1.htm)
             refresh_m2 = re.search(r'content=["\']0;\s*url=([^"\']+)["\']', issue_html, re.I)
             if refresh_m2:
-                current_issue_url, html = fetch_paper_html(urljoin(current_issue_url, refresh_m2.group(1)), timeout=8)
+                current_issue_url, seed_html = fetch_paper_html(urljoin(current_issue_url, refresh_m2.group(1)), timeout=8)
             elif issue_html:
-                html = issue_html
+                seed_html = issue_html
 
         # 2. 全面提取版面列表 (涵盖 node_*.htm / Page_*.html / layout 等各类数字报系统架构)
-        node_matches = re.findall(r'<a[^>]*href=["\']?([^"\'\s>]*(?:node_|page_|layout|szb)[^"\'\s>]*)["\']?[^>]*>(.*?)</a>', html, re.I | re.S)
+        node_matches = re.findall(r'<a[^>]*href=["\']?([^"\'\s>]*(?:node_|page_|layout|szb)[^"\'\s>]*)["\']?[^>]*>(.*?)</a>', seed_html, re.I | re.S)
         editions = []
         seen_nodes = set()
         for href, title in node_matches:
@@ -165,7 +171,7 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
                         add_candidate(ename, cand_title, urljoin(eurl, href_m.group(1)))
         else:
             # 兼容普通新闻门户或单页版面：解析全页超链接
-            links = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, re.I | re.S)
+            links = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', seed_html, re.I | re.S)
             for href, text in links:
                 clean_text = re.sub(r'<[^>]+>', '', text).strip()
                 if len(clean_text) >= 5:
