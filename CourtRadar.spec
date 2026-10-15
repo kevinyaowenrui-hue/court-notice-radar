@@ -56,6 +56,7 @@ hiddenimports = [
     'playwright.async_api',
     'webview',
     'webview.platforms.winforms',
+    'webview.platforms.edgechromium',
     'clr_loader',
     'pythonnet',
     'backend',

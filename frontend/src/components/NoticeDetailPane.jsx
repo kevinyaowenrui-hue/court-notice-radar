@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ExternalLink, Star, X, Check, Copy, Share2, GitCommit, Layers, ArrowUpRight } from 'lucide-react';
 import { updateNoticeNotes, toggleNoticeStar, fetchRelatedNotices } from '../api';
-import { PRESET_NOTE_TAGS, extractNoteTag, getNoteTagBadgeStyle, formatPublishTime } from '../tagUtils';
+import { PRESET_NOTE_TAGS, extractNoteTag, getNoteTagBadgeStyle, getRiskTagBadgeStyle, formatPublishTime } from '../tagUtils';
 
 export default function NoticeDetailPane({ notice, onClose, onStarChange, onNotesUpdated, onSelectNotice }) {
   const [notes, setNotes] = useState('');
@@ -280,6 +280,26 @@ export default function NoticeDetailPane({ notice, onClose, onStarChange, onNote
                   <>刚发布公示，法定准备期内，建议立即展开现场勘验、不动产产权查册、税费核算与信贷资金准备。</>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* 法拍标的排雷自检标签 */}
+        {notice.risk_tags && notice.risk_tags.length > 0 && (
+          <div className="bg-[#121827] rounded-lg p-3.5 border border-[#1e2638] space-y-2">
+            <div className="text-xs font-bold text-slate-200 flex items-center justify-between">
+              <span className="flex items-center space-x-1.5">
+                <span>🛡️</span>
+                <span>标的排雷自检标签</span>
+              </span>
+              <span className="text-[10px] text-slate-400 font-normal">基于公告正文与尽调文书自动排查</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {notice.risk_tags.map((tag) => (
+                <span key={tag} className={`px-2 py-0.5 text-xs font-semibold rounded ${getRiskTagBadgeStyle(tag)}`}>
+                  {tag}
+                </span>
+              ))}
             </div>
           </div>
         )}

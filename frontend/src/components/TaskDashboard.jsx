@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Activity, Play, CheckCircle2, AlertTriangle, Clock, RefreshCw, Zap, Trash2 } from 'lucide-react';
-import { fetchTaskLogs, runCrawlTask, runAllCrawlTasks, cleanHistoricalData } from '../api';
+import { fetchTaskLogs, runCrawlTask, runAllCrawlTasks, cleanHistoricalData, aliManualVerify } from '../api';
 
 const PIPELINES = [
   {
@@ -166,6 +166,19 @@ export default function TaskDashboard({ onTriggerCompleted }) {
     }
   };
 
+  const [verifyingAli, setVerifyingAli] = useState(false);
+  const handleAliManualVerify = async () => {
+    setVerifyingAli(true);
+    try {
+      const res = await aliManualVerify();
+      alert(res.message || '已唤起阿里拍卖独立窗口，请在弹出的浏览器中手动完成滑块拖拽或登录，完成后关闭窗口即可。');
+    } catch (err) {
+      alert('唤起失败: ' + err.message);
+    } finally {
+      setTimeout(() => setVerifyingAli(false), 5000);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -185,6 +198,14 @@ export default function TaskDashboard({ onTriggerCompleted }) {
               {syncMsg}
             </span>
           )}
+          <button
+            onClick={handleAliManualVerify}
+            disabled={verifyingAli}
+            className="flex items-center space-x-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-amber-300 bg-amber-950/50 hover:bg-amber-900/60 border border-amber-600/70 shadow-xs transition-colors"
+            title="在桌面独立唤起阿里拍卖真实浏览器，手动完成滑块拖动或登录，完成后持久化本地 Cookie"
+          >
+            <span>{verifyingAli ? '⏳ 唤起中...' : '🔓 手动过滑块验证'}</span>
+          </button>
           <button
             onClick={handleRunAllNow}
             disabled={syncingAll}
@@ -281,6 +302,16 @@ export default function TaskDashboard({ onTriggerCompleted }) {
                     </>
                   )}
                 </button>
+                {p.id === 'ali' && (
+                  <button
+                    onClick={handleAliManualVerify}
+                    disabled={verifyingAli}
+                    className="w-full mt-2 flex items-center justify-center space-x-1.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-semibold transition-colors"
+                    title="在桌面弹出一个真实浏览器窗口，手动拖动滑块验证码或登录淘宝，完成后持久化本地 Cookie"
+                  >
+                    <span>{verifyingAli ? '⏳ 正在等待手动过滑块...' : '🔓 手动过滑块验证'}</span>
+                  </button>
+                )}
               </div>
             </div>
           );

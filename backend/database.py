@@ -26,11 +26,12 @@ def ensure_db_integrity(db_path: str = None, backup_seed_path: str = None) -> bo
 
     if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
         if backup_seed_path and os.path.exists(backup_seed_path) and os.path.getsize(backup_seed_path) > 0:
-            try:
-                shutil.copy2(backup_seed_path, db_path)
-                print(f"[Database] Seed database copied to {db_path}")
-            except Exception as e:
-                print(f"[Database] Failed to copy seed database: {e}")
+            if os.path.abspath(db_path) != os.path.abspath(backup_seed_path or ""):
+                try:
+                    shutil.copy2(backup_seed_path, db_path)
+                    print(f"[Database] Seed database copied to {db_path}")
+                except Exception as e:
+                    print(f"[Database] Failed to copy seed database: {e}")
         return True
 
     is_corrupted = False
@@ -68,16 +69,17 @@ def ensure_db_integrity(db_path: str = None, backup_seed_path: str = None) -> bo
 
         # 尝试从初始种子库恢复
         if backup_seed_path and os.path.exists(backup_seed_path) and os.path.getsize(backup_seed_path) > 0:
-            try:
-                bconn = sqlite3.connect(backup_seed_path, timeout=5)
-                bres = bconn.cursor().execute("PRAGMA quick_check;").fetchall()
-                bconn.close()
-                if bres and bres[0][0].lower() == "ok":
-                    shutil.copy2(backup_seed_path, db_path)
-                    print(f"[Database] Successfully recovered from backup seed: {backup_seed_path}")
-                    return True
-            except Exception as e:
-                print(f"[Database] Error copying from seed: {e}")
+            if os.path.abspath(db_path) != os.path.abspath(backup_seed_path or ""):
+                try:
+                    bconn = sqlite3.connect(backup_seed_path, timeout=5)
+                    bres = bconn.cursor().execute("PRAGMA quick_check;").fetchall()
+                    bconn.close()
+                    if bres and bres[0][0].lower() == "ok":
+                        shutil.copy2(backup_seed_path, db_path)
+                        print(f"[Database] Successfully recovered from backup seed: {backup_seed_path}")
+                        return True
+                except Exception as e:
+                    print(f"[Database] Error copying from seed: {e}")
 
         print("[Database] Clean database will be regenerated.")
         return False
@@ -106,8 +108,12 @@ else:
     DB_DIR = os.path.join(BASE_DIR, "data")
     os.makedirs(DB_DIR, exist_ok=True)
     DB_PATH = os.path.join(DB_DIR, "court_notices.db")
+    DATA_DIR = DB_DIR
     bak_candidate = os.path.join(DB_DIR, "court_notices.db.bak")
     SEED_PATH = bak_candidate if os.path.exists(bak_candidate) and os.path.getsize(bak_candidate) > 0 else None
+
+# 导出通用持久化数据目录
+DATA_DIR = DB_DIR
 
 # 执行启动自检与恢复保护
 ensure_db_integrity(DB_PATH, SEED_PATH)
@@ -134,7 +140,7 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     except Exception as e:
         print(f"[Database] Warning setting pragma: {e}")
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 Base = declarative_base()
 
 def get_db():

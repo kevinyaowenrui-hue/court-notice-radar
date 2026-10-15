@@ -1,6 +1,6 @@
 import React from 'react';
 import { Star, ExternalLink, Share2, ShieldAlert } from 'lucide-react';
-import { extractNoteTag, getNoteTagBadgeStyle, formatPublishTime } from '../tagUtils';
+import { extractNoteTag, getNoteTagBadgeStyle, getRiskTagBadgeStyle, formatPublishTime } from '../tagUtils';
 
 export default function NoticeTableView({
   notices = [],
@@ -146,6 +146,15 @@ export default function NoticeTableView({
                     {item.henan_city && (
                       <span className="shrink-0 text-[10px] font-semibold px-1 py-0.1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
                         {item.henan_city}
+                      </span>
+                    )}
+                    {item.risk_tags && item.risk_tags.length > 0 && (
+                      <span className="flex items-center space-x-1 shrink-0">
+                        {item.risk_tags.slice(0, 2).map((tag) => (
+                          <span key={tag} className={`px-1 py-0.1 text-[9px] font-semibold rounded shrink-0 ${getRiskTagBadgeStyle(tag)}`}>
+                            {tag}
+                          </span>
+                        ))}
                       </span>
                     )}
                     <span className={`truncate ${isSelected ? 'text-amber-200' : 'text-[#f1f5f9]'}`}>

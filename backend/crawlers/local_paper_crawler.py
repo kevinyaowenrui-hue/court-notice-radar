@@ -183,31 +183,61 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
             # 清理 URL 中的 HTML 实体转义符（如 &amp;）
             art_url = html.unescape(raw_art_url)
 
-            # 正文/标题二次强校验：必须同时具备司法/处置主体词与业务动作词
-            has_subject = bool(re.search(r'人民法院|金融资产|资产管理|银行|农商行|破产管理人|拍卖', title))
-            has_action = bool(re.search(r'拍卖|变卖|送达|传票|破产|清算|重整|债权转让|催收|执行裁定', title))
-            is_veto = bool(re.search(r'招聘|市集|反恐|大赛|校园|学法|普法|公积金|选调|政法委|交房|交付公告|友情链接', title))
+            # 初步排除明显的反恐/招聘/生活宣传类标题
+            if bool(re.search(r'招聘|市集|反恐|大赛|校园|学法|普法|公积金|选调|政法委|交房|交付公告|友情链接', title)):
+                continue
 
-            if not (has_subject and has_action) or is_veto:
+            # 深度穿透：请求详情页正文（前 2000 字），以支持正文级主体+动作双因子研判与关键要素抽取
+            body_text = ""
+            try:
+                _, art_html = fetch_paper_html(art_url, timeout=5)
+                if art_html:
+                    clean_art = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', art_html, flags=re.I | re.S)
+                    main_m = re.search(r'<(?:div|td|article|section)[^>]*(?:content|article|detail|main|news|text)[^>]*>(.*?)</(?:div|td|article|section)>', clean_art, re.I | re.S)
+                    txt_source = main_m.group(1) if main_m else clean_art
+                    raw_body = re.sub(r'<[^>]+>', ' ', txt_source)
+                    body_text = re.sub(r'\s+', ' ', raw_body).strip()[:2000]
+            except Exception:
+                body_text = ""
+
+            check_text = f"{title}\n{body_text}" if body_text else title
+
+            # 正文/标题二次强校验：必须同时具备司法/处置主体词与业务动作词
+            has_subject = bool(re.search(r'人民法院|中级法院|基层法院|法庭|金融资产|资产管理|银行|农商行|破产管理人|拍卖行|产权交易|清算组', check_text))
+            has_action = bool(re.search(r'拍卖|变卖|送达|传票|破产|清算|重整|债权转让|催收|执行裁定|起诉状', check_text))
+
+            if not (has_subject and has_action):
                 continue
-            if is_promotional_content(title):
+            if is_promotional_content(check_text):
                 continue
-            if is_vehicle_or_equipment_item(title):
+            if is_vehicle_or_equipment_item(title, body_text):
                 continue
 
             raw_id = f"paper_{seed.id}_{stable_hash(title)}"
 
             # 从正文/标题智能提取真实法院或债权处置机构；未提取到时标记为报纸公告版，严禁伪造“XX地方人民法院”
-            court_m = re.search(r'([^\s，。、（]{2,15}(?:人民法院|中级法院|基层法院|法庭|金融资产管理公司|破产管理人|拍卖行|产权交易中心))', title)
+            court_m = re.search(r'([^\s，。、（]{2,15}(?:人民法院|中级法院|基层法院|法庭|金融资产管理公司|破产管理人|拍卖行|产权交易中心))', check_text)
             court_name = court_m.group(1) if court_m else f"《{seed.paper_name}》公告版"
 
-            # 严格案号抽取
-            case_number = extract_judicial_case_number(title)
+            # 严格案号抽取（正文联合检索）
+            case_number = extract_judicial_case_number(check_text) or ""
 
-            content_text = f"报纸媒体：{seed.paper_name}（{seed.province} · {seed.city}）\n所属版面：{ename}\n刊登标题：{title}\n报社电子报入口：{seed.epaper_url}\n原文阅读链接：{art_url}\n（数据来源于地方报纸官方实时网络版发布）"
+            # 智能提取真实的起拍价与评估价
+            starting_price, eval_price = extract_starting_and_eval_price(title, body_text or title)
+            if starting_price is not None:
+                starting_price = round(starting_price, 2)
+            if eval_price is not None:
+                eval_price = round(eval_price, 2)
 
-            # 河南 18 地市精确映射，严禁出现 henan_city="河南"
-            if "河南" in seed.province or "河南" in seed.city or any(k in seed.paper_name for k in ["日报", "晚报", "河南"]):
+            content_text = (
+                f"报纸媒体：{seed.paper_name}（{seed.province} · {seed.city}）\n"
+                f"所属版面：{ename}\n刊登标题：{title}\n"
+                f"报社电子报入口：{seed.epaper_url}\n原文阅读链接：{art_url}\n"
+                f"【公告正文摘录】\n{body_text[:1200] if body_text else title}"
+            )
+
+            # 河南 18 地市精确映射，严禁出现 henan_city="河南"，严禁将带“日报/晚报”的外省报纸误判为河南属地
+            if "河南" in (seed.province or "") or "河南" in (seed.city or "") or seed.paper_name in HENAN_PAPER_CITY_MAP:
                 is_henan = True
                 mapped_city = HENAN_PAPER_CITY_MAP.get(seed.paper_name)
                 if not mapped_city:
@@ -242,13 +272,6 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
                 notice_type = "报刊诉讼送达公告"
             else:
                 notice_type = "地方报纸法治刊登"
-
-            # 智能提取真实的起拍价与评估价（严格避免将减资/借款金额当起拍价，无真实评估价则为None）
-            starting_price, eval_price = extract_starting_and_eval_price(title, content_text)
-            if starting_price is not None:
-                starting_price = round(starting_price, 2)
-            if eval_price is not None:
-                eval_price = round(eval_price, 2)
 
             module_type = categorize_notice_module(title, content_text, notice_type, "local_paper")
 

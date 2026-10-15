@@ -40,3 +40,23 @@ export const formatPublishTime = (timeStr) => {
   }
   return clean.slice(0, 16);
 };
+
+// 法拍排雷风险标签高亮样式
+export const getRiskTagBadgeStyle = (tag) => {
+  switch (tag) {
+    case '已腾空':
+    case '无租约':
+    case '税费各付':
+    case '有产权证':
+      return 'bg-emerald-950/60 text-emerald-300 border border-emerald-700/60';
+    case '未腾空':
+    case '买受人全担税':
+    case '无产权证':
+      return 'bg-rose-950/60 text-rose-300 border border-rose-700/60 font-semibold';
+    case '带租约':
+    case '存在抵押':
+      return 'bg-amber-950/60 text-amber-300 border border-amber-700/60';
+    default:
+      return 'bg-slate-800/60 text-slate-300 border border-slate-700';
+  }
+};

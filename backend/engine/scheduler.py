@@ -2,12 +2,12 @@
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from backend.database import SessionLocal
-from backend.models import TaskLog
+from backend.models import TaskLog, CourtNotice
 from backend.engine.rule_matcher import match_new_notices
-from backend.engine.webhook import send_alert_webhook
+from backend.engine.webhook import send_alert_webhook, send_bidding_countdown_webhook
 from backend.crawlers.rmfyb_crawler import crawl_rmfyb_notices
 from backend.crawlers.jd_crawler import crawl_jd_auctions
 from backend.crawlers.ali_crawler import crawl_ali_auctions
@@ -178,6 +178,28 @@ def trigger_run_all_crawlers() -> dict:
         "message": "已启动全网 7 大数据源受控并发采集（HTTP组并发3，浏览器组并发2）与规则预警匹配"
     }
 
+def check_starred_bidding_countdown():
+    """每日定时任务：对 is_starred=True 且距离 bidding_start 不足 48 小时的标的发送 Webhook 倒计时提醒"""
+    now = datetime.now()
+    cutoff = now + timedelta(hours=48)
+    try:
+        with SessionLocal() as db:
+            urgent_starred = db.query(CourtNotice).filter(
+                CourtNotice.is_starred == True,
+                CourtNotice.bidding_start.isnot(None),
+                CourtNotice.bidding_start >= now,
+                CourtNotice.bidding_start <= cutoff
+            ).order_by(CourtNotice.bidding_start.asc()).all()
+
+            if urgent_starred:
+                print(f"[Scheduler] Found {len(urgent_starred)} starred notices starting within 48h. Dispatching countdown Webhook...")
+                res = send_bidding_countdown_webhook(db, urgent_starred)
+                print(f"[Scheduler] Starred countdown Webhook result: {res}")
+            else:
+                print("[Scheduler] No starred notices starting within 48h.")
+    except Exception as e:
+        print(f"[Scheduler] Starred countdown check error: {e}")
+
 def start_scheduler():
     """启动后台定时任务调度"""
     if not scheduler.running:
@@ -188,5 +210,8 @@ def start_scheduler():
         scheduler.add_job(lambda: run_crawler_pipeline("local_paper"), 'interval', hours=2, id="job_local", replace_existing=True)
         scheduler.add_job(lambda: run_crawler_pipeline("caa"), 'interval', minutes=30, id="job_caa", replace_existing=True)
         scheduler.add_job(lambda: run_crawler_pipeline("ggzy"), 'interval', minutes=30, id="job_ggzy", replace_existing=True)
+        # 每日早间 09:00 与每 6 小时巡检关注标的开拍倒计时
+        scheduler.add_job(check_starred_bidding_countdown, 'cron', hour=9, minute=0, id="job_starred_countdown", replace_existing=True)
+        scheduler.add_job(check_starred_bidding_countdown, 'interval', hours=6, id="job_starred_countdown_interval", replace_existing=True)
         scheduler.start()
         print("[Scheduler] APScheduler background engine started successfully.")

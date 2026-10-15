@@ -395,6 +395,21 @@ def crawl_rmfysszc_notices(db: Optional[Session] = None, max_pages: int = 2) -> 
             is_henan, henan_city, henan_tag = detect_henan_info(title, court, content_text)
             mod_type = "拍卖公告"
 
+            sp = detail.get('starting_price')
+            ep = detail.get('eval_price')
+            if sp is None or ep is None:
+                sp_cand, ep_cand = extract_starting_and_eval_price(title, content_text)
+                if sp is None:
+                    sp = sp_cand
+                if ep is None:
+                    ep = ep_cand
+            if sp is not None:
+                sp = round(float(sp), 2)
+            if ep is not None:
+                ep = round(float(ep), 2)
+            if sp is not None and ep is not None and sp == ep:
+                ep = None
+
             if not existing:
                 notice = CourtNotice(
                     platform="rmfysszc",
@@ -408,8 +423,8 @@ def crawl_rmfysszc_notices(db: Optional[Session] = None, max_pages: int = 2) -> 
                     content_text=content_text,
                     publish_time=pub_dt,
                     source_url=url,
-                    starting_price=detail.get('starting_price'),
-                    eval_price=detail.get('eval_price'),
+                    starting_price=sp,
+                    eval_price=ep,
                     auction_stage=stage,
                     asset_category=category,
                     bidding_start=detail.get('bidding_start'),

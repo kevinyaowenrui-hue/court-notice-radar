@@ -210,3 +210,15 @@ export async function cleanHistoricalData(days = 7) {
   return res.json();
 }
 
+export async function aliManualVerify() {
+  const res = await fetch(`${BASE_URL}/crawlers/ali/manual-verify`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to trigger Ali manual verify');
+  return res.json();
+}
+
+export async function triggerCountdownCheck() {
+  const res = await fetch(`${BASE_URL}/alerts/countdown/check`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to trigger countdown check');
+  return res.json();
+}
+

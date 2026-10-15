@@ -26,6 +26,7 @@ from backend.engine.scheduler import start_scheduler, run_crawler_pipeline, trig
 from backend.engine.rule_matcher import check_match, match_new_notices
 from backend.engine.webhook import get_webhook_config, save_webhook_config, test_webhook
 from backend.crawlers.seed_53bk import sync_53bk_seeds
+from backend.utils import extract_risk_tags
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -380,7 +381,8 @@ def get_alerts(
                 "henan_city": notice.henan_city,
                 "henan_tag": notice.henan_tag,
                 "is_starred": bool(getattr(notice, "is_starred", False)),
-                "user_notes": getattr(notice, "user_notes", "") or ""
+                "user_notes": getattr(notice, "user_notes", "") or "",
+                "risk_tags": extract_risk_tags(f"{notice.title or ''} {notice.content_text or ''}")
             }
         })
 
@@ -904,7 +906,8 @@ def get_notices(
             "henan_tag": n.henan_tag,
             "is_today": is_today,
             "is_starred": bool(getattr(n, "is_starred", False)),
-            "user_notes": getattr(n, "user_notes", "") or ""
+            "user_notes": getattr(n, "user_notes", "") or "",
+            "risk_tags": extract_risk_tags(f"{n.title or ''} {n.content_text or ''}")
         })
     return {
         "total": total,
@@ -972,12 +975,13 @@ def get_notice_detail(notice_id: int, db: Session = Depends(get_db)):
         "henan_city": n.henan_city,
         "henan_tag": n.henan_tag,
         "is_starred": bool(getattr(n, "is_starred", False)),
-        "user_notes": getattr(n, "user_notes", "") or ""
+        "user_notes": getattr(n, "user_notes", "") or "",
+        "risk_tags": extract_risk_tags(f"{n.title or ''} {n.content_text or ''}")
     }
 
 @app.get("/api/notices/{notice_id}/related")
 def get_related_notices(notice_id: int, db: Session = Depends(get_db)):
-    """获取与当前标的关联的历史公示与跨平台全流程时间线"""
+    """获取与当前标的关联的历史公示与跨平台全流程时间线（支持同债务人/企业、同小区、同案号历史关联）"""
     import re
     notice = db.query(CourtNotice).filter(CourtNotice.id == notice_id).first()
     if not notice:
@@ -992,59 +996,101 @@ def get_related_notices(notice_id: int, db: Session = Depends(get_db)):
             CourtNotice.case_number == notice.case_number
         ).all()
         for m in case_matches:
+            if m.module_type == "拍卖公告":
+                stg = m.auction_stage or "拍卖"
+                reason_text = f"同案号司法拍卖 ({stg}): {notice.case_number}"
+            elif m.platform in ['rmfyb', 'local_paper']:
+                reason_text = f"同案号裁判/送达公告: {notice.case_number}"
+            else:
+                reason_text = f"同案号关联: {notice.case_number}"
             related_map[m.id] = {
                 "notice": m,
-                "reason": f"同案号: {notice.case_number}"
+                "reason": reason_text
             }
 
-    # 2. 相同机构/AMC/当事人主体关联
+    # 2. 相同机构/债务人/当事人主体关联（跨平台关联送达公告、债权催收与一拍/二拍）
     entity_names = []
     if notice.parties:
-        raw_parties = [p.strip() for p in notice.parties.replace('；', ';').replace('，', ',').split(';') if len(p.strip()) >= 3]
+        raw_parties = [p.strip() for p in re.split(r'[；;,，、\s]+', notice.parties) if len(p.strip()) >= 2]
         for p in raw_parties:
-            p_clean = p.replace("被执行人:", "").replace("被执行人：", "").replace("申请执行人:", "").replace("申请执行人：", "").strip()
-            if len(p_clean) >= 3 and p_clean not in ["中级人民法院", "基层人民法院", "人民法院", "待查"]:
+            p_clean = re.sub(r'^(?:被执行人|申请执行人|原告|被告|当事人|借款人|担保人)[:：]?', '', p).strip()
+            if 2 <= len(p_clean) <= 30 and not any(bad in p_clean for bad in ["人民法院", "中级法院", "基层法院", "法院", "待查", "自然人", "未公开"]):
                 entity_names.append(p_clean)
 
-    ent_match = re.search(r'([\u4e00-\u9fa5]{2,16}(?:资产管理有限公司|分公司|实业有限公司|重工有限公司|置业有限公司))', notice.title or '')
-    if ent_match:
-        entity_names.append(ent_match.group(1))
+    # 从标题与正文提取企业主体
+    full_text = f"{notice.title or ''} {(notice.content_text or '')[:1000]}"
+    corp_matches = re.findall(r'([\u4e00-\u9fa5]{2,25}(?:(?:股份)?有限(?:责任)?公司|集团有限公司|集团|商贸公司|置业公司|房地产公司|实业公司|工程公司|重工公司|制药厂|化工厂|合作社))', full_text)
+    for c in corp_matches:
+        if 4 <= len(c) <= 25 and not any(bad in c for bad in ["人民法院", "基层法院", "交易中心", "拍卖公司"]):
+            entity_names.append(c)
 
-    for entity in set(entity_names):
+    # 从标题与正文提取自然人债务人
+    debtor_matches = re.findall(r'(?:被执行人|债务人|保证人|被催告人)[：:\s]*([\u4e00-\u9fa5]{2,4})', full_text)
+    for d in debtor_matches:
+        if 2 <= len(d) <= 4 and d not in ["法院", "申请", "执行", "公告"]:
+            entity_names.append(d)
+
+    # 限制查询主体去重后的前 4 个主体
+    unique_entities = list(dict.fromkeys(entity_names))[:4]
+    for entity in unique_entities:
         party_matches = db.query(CourtNotice).filter(
             CourtNotice.id != notice.id,
             or_(
                 CourtNotice.parties.like(f"%{entity}%"),
                 CourtNotice.title.like(f"%{entity}%"),
-                CourtNotice.court_name.like(f"%{entity}%")
+                CourtNotice.content_text.like(f"%{entity}%")
             )
-        ).limit(5).all()
+        ).limit(6).all()
+
         for m in party_matches:
             if m.id not in related_map:
+                m_title = m.title or ""
+                if m.platform in ['rmfyb', 'local_paper'] or any(k in m_title for k in ["送达", "传票", "判决", "起诉状", "开庭"]):
+                    reason = f"同债务人/企业历史送达: {entity}"
+                elif m.module_type == "债权转让" or any(k in m_title for k in ["债权", "催收", "资产包", "不良资产"]):
+                    reason = f"同债务人/企业债权催收: {entity}"
+                elif m.module_type == "拍卖公告" or m.platform in ['ali', 'jd', 'rmfysszc', 'caa']:
+                    stg = m.auction_stage or "拍卖"
+                    reason = f"同债务人/主体法拍 ({stg}): {entity}"
+                else:
+                    reason = f"同债务人/关联主体: {entity}"
                 related_map[m.id] = {
                     "notice": m,
-                    "reason": f"关联主体: {entity}"
+                    "reason": reason
                 }
 
-    # 3. 核心标的资产地址/地段关键词关联 (严格排除法院机构名称)
-    clean_title = re.sub(r'[\u4e00-\u9fa5]{2,10}(?:人民法院|中级法院|基层法院|法院)', '', notice.title or '')
-    addr_match = re.search(r'([\u4e00-\u9fa5A-Za-z0-9]{2,10}(?:路|街|道|大厦|广场|公寓|小区|花园)[\d号楼单元室]{1,8})', clean_title)
-    if addr_match and len(addr_match.group(1)) >= 4:
-        keyword = addr_match.group(1)
-        if "法院" not in keyword:
-            addr_matches = db.query(CourtNotice).filter(
-                CourtNotice.id != notice.id,
-                or_(
-                    CourtNotice.title.like(f"%{keyword}%"),
-                    CourtNotice.content_text.like(f"%{keyword}%")
-                )
-            ).limit(5).all()
-            for m in addr_matches:
-                if m.id not in related_map:
-                    related_map[m.id] = {
-                        "notice": m,
-                        "reason": f"相同标的资产: {keyword}"
-                    }
+    # 3. 房产小区名称跨平台关联（同小区房产拍卖、一拍/二拍流转记录）
+    clean_title = re.sub(r'[\u4e00-\u9fa5]{2,12}(?:人民法院|中级法院|基层法院|法院|交易中心|委员会)', '', notice.title or '')
+    clean_full = f"{clean_title} {(notice.content_text or '')[:500]}"
+    community_matches = re.findall(r'([\u4e00-\u9fa5A-Za-z0-9]{2,12}(?:小区|花园|家园|雅苑|公馆|新城|广场|大厦|世家|华庭|名都|名门|城|苑|湾|坊|翠庭|山庄))', clean_full)
+    
+    unique_communities = []
+    for cm in community_matches:
+        if cm not in unique_communities and not any(bad in cm for bad in ["住宅小区", "某小区", "商业广场", "行政服务中心", "办公大楼", "省", "市", "区", "县"]):
+            unique_communities.append(cm)
+
+    for comm in unique_communities[:2]:
+        comm_matches = db.query(CourtNotice).filter(
+            CourtNotice.id != notice.id,
+            or_(
+                CourtNotice.title.like(f"%{comm}%"),
+                CourtNotice.content_text.like(f"%{comm}%")
+            )
+        ).limit(6).all()
+
+        for m in comm_matches:
+            if m.id not in related_map:
+                if m.module_type == "拍卖公告" or m.platform in ['ali', 'jd', 'rmfysszc', 'caa']:
+                    stg = m.auction_stage or "拍卖"
+                    reason = f"同小区房产拍卖 ({stg}): {comm}"
+                elif m.platform in ['rmfyb', 'local_paper']:
+                    reason = f"同小区涉案诉讼/送达: {comm}"
+                else:
+                    reason = f"同小区标的资产: {comm}"
+                related_map[m.id] = {
+                    "notice": m,
+                    "reason": reason
+                }
 
     # 组装时间线
     timeline_items = [
@@ -1058,7 +1104,7 @@ def get_related_notices(notice_id: int, db: Session = Depends(get_db)):
         })
 
     def sort_key(x):
-        dt = x["notice"].publish_time
+        dt = x["notice"].publish_time or x["notice"].created_at
         return dt.timestamp() if dt else 0
     timeline_items.sort(key=sort_key)
 
@@ -1084,7 +1130,8 @@ def get_related_notices(notice_id: int, db: Session = Depends(get_db)):
             "publish_time": n.publish_time.strftime("%Y-%m-%d %H:%M") if n.publish_time else None,
             "source_url": n.source_url,
             "match_reason": item["reason"],
-            "is_current": item["is_current"]
+            "is_current": item["is_current"],
+            "risk_tags": extract_risk_tags(f"{n.title or ''} {n.content_text or ''}")
         })
 
     return {
@@ -1093,6 +1140,33 @@ def get_related_notices(notice_id: int, db: Session = Depends(get_db)):
         "related_count": len(related_map),
         "items": items
     }
+
+@app.post("/api/crawlers/ali/manual-verify")
+def ali_manual_verify():
+    """唤起可视化浏览器完成阿里拍卖滑块验证与Cookie持久化"""
+    def _worker():
+        import asyncio
+        from backend.crawlers.ali_crawler import run_ali_manual_verification
+        try:
+            asyncio.run(run_ali_manual_verification(timeout_sec=120))
+        except Exception as e:
+            print(f"[ManualVerify] Error: {e}")
+
+    import threading
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return {
+        "status": "ok",
+        "message": "已在桌面唤起阿里拍卖独立窗口，请在弹出的浏览器中手动完成滑块拖拽或登录，完成后关闭窗口即可。"
+    }
+
+@app.post("/api/alerts/countdown/check")
+def trigger_bidding_countdown_check():
+    """手动立即触发一次关注标的48小时开拍倒计时巡检与推送"""
+    from backend.engine.scheduler import check_starred_bidding_countdown
+    check_starred_bidding_countdown()
+    return {"status": "ok", "message": "已执行关注标的48小时开拍倒计时巡检"}
+
 
 @app.get("/api/papers")
 def get_papers(

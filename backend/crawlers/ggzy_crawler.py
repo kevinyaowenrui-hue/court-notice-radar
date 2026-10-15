@@ -15,8 +15,11 @@ import http.cookiejar
 import ssl
 import json
 import re
+import os
 import subprocess
 from datetime import datetime
+
+NO_WINDOW_FLAGS = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000) if os.name == 'nt' else 0
 from typing import List, Tuple, Optional
 from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
@@ -269,7 +272,7 @@ def fetch_henan_provincial_cqjy(page_size: int = 30, kw: str = "") -> List[dict]
             '-H', 'Referer: https://hnsggzyjy.henan.gov.cn/jyxx/002003/transaction_notice.html',
             url
         ]
-        out = subprocess.check_output(cmd).decode('utf-8', errors='ignore')
+        out = subprocess.check_output(cmd, timeout=12, creationflags=NO_WINDOW_FLAGS).decode('utf-8', errors='ignore')
         data = json.loads(out)
         items = data.get('custom', {}).get('infodata', [])
 
@@ -302,7 +305,7 @@ def fetch_henan_provincial_cqjy(page_size: int = 30, kw: str = "") -> List[dict]
                 sp, ep, bs, be = None, None, None, None
                 try:
                     cmd_d = ['curl.exe', '-k', '-s', detail_url]
-                    d_html = subprocess.check_output(cmd_d, timeout=8).decode('utf-8', errors='ignore')
+                    d_html = subprocess.check_output(cmd_d, timeout=12, creationflags=NO_WINDOW_FLAGS).decode('utf-8', errors='ignore')
                     sp, ep, bs, be = extract_prices_and_times_from_html(d_html, title)
                 except Exception:
                     pass
@@ -446,7 +449,7 @@ def fetch_zhengzhou_cqjy(page_size: int = 25) -> List[dict]:
             '-H', 'Referer: https://zzggzy.zhengzhou.gov.cn/cqjy/subpage.html',
             url
         ]
-        out = subprocess.check_output(cmd).decode('utf-8', errors='ignore')
+        out = subprocess.check_output(cmd, timeout=12, creationflags=NO_WINDOW_FLAGS).decode('utf-8', errors='ignore')
         data = json.loads(out)
         records = data.get('result', {}).get('records', [])
 

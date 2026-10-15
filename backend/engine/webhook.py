@@ -304,3 +304,99 @@ def test_webhook(config: Dict[str, Any]) -> Dict[str, Any]:
             "status": "error",
             "message": f"连接测试失败: {str(e)}"
         }
+
+def send_bidding_countdown_webhook(db: Session, starred_notices: List[CourtNotice]) -> Dict[str, Any]:
+    """对已关注且距离开拍不足 48 小时的重点标的发送开拍倒计时提醒"""
+    config = get_webhook_config(db)
+    if not config.get("enabled"):
+        return {"status": "disabled", "message": "Webhook 推送未启用"}
+
+    target_url = config.get("webhook_url", "").strip()
+    if not target_url or not starred_notices:
+        return {"status": "ignored", "message": "无有效 Webhook 地址或无急需提醒标的"}
+
+    platform = config.get("platform", "wecom")
+    secret = config.get("secret", "").strip()
+
+    if platform == "dingtalk" and secret:
+        target_url = _sign_dingtalk_url(target_url, secret)
+
+    total = len(starred_notices)
+    card_lines = [
+        f"### ⏰ 【法拍雷达】重点关注标的开拍倒计时提醒 ({total} 件即将开拍)",
+        "> **提示**: 您重点星标跟进的以下标的即将在 **48 小时内** 正式开拍，请及时确认保证金划转、实地看样与参拍准备！\n"
+    ]
+
+    from datetime import datetime
+    now = datetime.now()
+    for idx, n in enumerate(starred_notices[:5]):
+        hours_str = ""
+        if n.bidding_start:
+            diff = n.bidding_start - now
+            h_left = max(0, int(diff.total_seconds() / 3600))
+            hours_str = f"（约剩 **{h_left}** 小时）"
+
+        price_info = f"¥{n.starting_price:,.2f}" if n.starting_price else "待定"
+        stage_info = n.auction_stage or "拍卖"
+        card_lines.append(f"**{idx + 1}. {n.title}**")
+        card_lines.append(f"> • **开拍时间**: {n.bidding_start.strftime('%Y-%m-%d %H:%M') if n.bidding_start else '即将开拍'} {hours_str}")
+        card_lines.append(f"> • **当前阶段**: {stage_info} · 起拍价 {price_info}")
+        card_lines.append(f"> • **处置法院**: {n.court_name or '法院'} (豫 · {n.henan_city or '全省'})")
+        if n.source_url:
+            card_lines.append(f"> • [👉 点击前往官方拍卖页面]({n.source_url})")
+        card_lines.append("")
+
+    if total > 5:
+        card_lines.append(f"*另有 {total - 5} 件已关注标的即将开拍，请前往客户端查看。*")
+
+    md_content = "\n".join(card_lines)
+
+    if platform == "wecom":
+        payload = {
+            "msgtype": "markdown",
+            "markdown": {"content": md_content}
+        }
+    elif platform == "dingtalk":
+        payload = {
+            "msgtype": "markdown",
+            "markdown": {
+                "title": f"【法拍雷达】{total}件关注标的即将开拍",
+                "text": md_content
+            }
+        }
+    elif platform == "feishu":
+        payload = {
+            "msg_type": "interactive",
+            "card": {
+                "header": {
+                    "title": {"tag": "plain_text", "content": f"⏰ 关注标的开拍倒计时 ({total}件)"},
+                    "template": "orange"
+                },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {"tag": "lark_md", "content": md_content}
+                    }
+                ]
+            }
+        }
+        if secret:
+            payload.update(_sign_feishu(secret))
+    else:
+        payload = {
+            "event": "bidding_countdown",
+            "total": total,
+            "text": md_content,
+            "notice_ids": [n.id for n in starred_notices]
+        }
+
+    try:
+        resp = requests.post(target_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+        ok, msg = validate_webhook_response(platform, resp.status_code, resp.text)
+        if ok:
+            return {"status": "success", "message": f"成功推送 {total} 件标的开拍倒计时提醒"}
+        else:
+            return {"status": "error", "message": f"推送被拒绝: {msg}"}
+    except Exception as e:
+        return {"status": "error", "message": f"网络异常: {str(e)}"}
+

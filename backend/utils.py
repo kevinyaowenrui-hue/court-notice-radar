@@ -567,3 +567,46 @@ async def launch_smart_browser(playwright_instance, headless: bool = True):
         pass
     # 3. 回退默认 Chromium
     return await playwright_instance.chromium.launch(headless=headless)
+
+def extract_risk_tags(text: str) -> list[str]:
+    """
+    自动从标的标题或正文中提取法拍核心排雷标签：
+    - 已腾空 / 未腾空
+    - 无租约 / 带租约
+    - 税费各付 / 买受人全担税
+    - 无产权证 / 有产权证
+    - 存在抵押
+    """
+    if not text:
+        return []
+    tags = []
+
+    # 1. 腾空交付情况（先判未腾空，避免被局部词汇误判）
+    if re.search(r'未腾空|暂未腾空|尚未腾空|有人居住|被执行人居住|由被执行人使用|由案外人使用|有人占用|被执行人占用|占用中|暂不腾退|未搬离', text):
+        tags.append("未腾空")
+    elif re.search(r'已腾空|已清空|无障碍交割|房屋空置|现已空置|已搬空|现空置', text):
+        tags.append("已腾空")
+
+    # 2. 租赁占有情况（先判无租约）
+    if re.search(r'无租[约赁]|未见租[约赁]|无承租人|未发现租赁|无租赁合同|未有租赁|无租赁', text):
+        tags.append("无租约")
+    elif re.search(r'带租[约赁]|有租[约赁]|存在租赁|租赁期至|有人承租|租赁合同|承租期至', text):
+        tags.append("带租约")
+
+    # 3. 税费承担方案（先判税费各付）
+    if re.search(r'税费各[自担付]|各自承担.*税费|各自缴[纳付]|各付税费|税费各自分担|税费由双方各自承担', text):
+        tags.append("税费各付")
+    elif re.search(r'买受人承担全部税费|税费均由买受人|买受人全担税|全部税费由买受人|一切税费均由买受人|由买受人承担.*税费|税费.*全部由买受人', text):
+        tags.append("买受人全担税")
+
+    # 4. 权证登记情况（先判无产权证）
+    if re.search(r'无产权证|暂未办理产权证|未取得权属证书|未办理不动产权证|暂无房产证|无不动产权证|暂无不动产登记', text):
+        tags.append("无产权证")
+    elif re.search(r'不动产权证号|房产证号|房屋所有权证|权属证书号', text):
+        tags.append("有产权证")
+
+    # 5. 抵押情况
+    if re.search(r'存在抵押|设有抵押|已抵押登记|有抵押', text):
+        tags.append("存在抵押")
+
+    return tags

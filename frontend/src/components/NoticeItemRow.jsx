@@ -1,6 +1,6 @@
 import React from 'react';
 import { Star, ShieldAlert } from 'lucide-react';
-import { extractNoteTag, getNoteTagBadgeStyle, formatPublishTime } from '../tagUtils';
+import { extractNoteTag, getNoteTagBadgeStyle, getRiskTagBadgeStyle, formatPublishTime } from '../tagUtils';
 
 export default function NoticeItemRow({ item, isSelected, isUnread, ruleName, onClick, onToggleStar }) {
   if (!item) return null;
@@ -134,6 +134,19 @@ export default function NoticeItemRow({ item, isSelected, isUnread, ruleName, on
               <span>·</span>
               <span className="text-amber-400 font-medium">
                 {item.henan_city}
+              </span>
+            </>
+          )}
+
+          {item.risk_tags && item.risk_tags.length > 0 && (
+            <>
+              <span>·</span>
+              <span className="flex items-center space-x-1 shrink-0">
+                {item.risk_tags.slice(0, 3).map((tag) => (
+                  <span key={tag} className={`px-1 py-0.1 text-[9px] font-semibold rounded shrink-0 ${getRiskTagBadgeStyle(tag)}`}>
+                    {tag}
+                  </span>
+                ))}
               </span>
             </>
           )}

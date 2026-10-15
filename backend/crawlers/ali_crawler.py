@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from backend.models import CourtNotice
 
 import os
+from backend.database import SessionLocal, DATA_DIR
 from backend.utils import (
     run_async, detect_henan_info, stable_hash, categorize_notice_module,
     is_vehicle_or_equipment_item, parse_price_amount, launch_smart_browser,
@@ -22,7 +23,7 @@ from backend.utils import (
 async def fetch_ali_real_auctions() -> List[dict]:
     results = []
     async with async_playwright() as p:
-        user_data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "ali_profile")
+        user_data_dir = os.path.join(DATA_DIR, "ali_profile")
         os.makedirs(user_data_dir, exist_ok=True)
         browser = None
         try:
@@ -117,9 +118,22 @@ async def fetch_ali_real_auctions() -> List[dict]:
                             continue
                         seen_urls.add(clean_url)
 
-                        # 提取卡片文本
+                        # 提取卡片文本（优先通过最近的父容器提取，确保包含卡片外部/兄弟节点的起拍价与评估价）
                         raw_text = (await card.inner_text()).strip()
-                        if not raw_text or len(raw_text) < 6:
+                        container_text = ""
+                        try:
+                            parent_handle = await card.evaluate_handle(
+                                "el => el.closest('li') || el.closest('.sf-item') || el.closest('.item') || el.closest('.item-info') || el.parentElement"
+                            )
+                            if parent_handle:
+                                c_txt = await parent_handle.inner_text()
+                                if c_txt:
+                                    container_text = c_txt.strip()
+                        except Exception:
+                            container_text = ""
+
+                        combined_text = container_text if len(container_text) > len(raw_text) else raw_text
+                        if not combined_text or len(combined_text) < 6:
                             continue
 
                         # 提取标的物 ID
@@ -130,12 +144,18 @@ async def fetch_ali_real_auctions() -> List[dict]:
                         seen_raw_ids.add(raw_id)
 
                         # 解析标题与价格
-                        lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+                        lines = [l.strip() for l in combined_text.splitlines() if l.strip()]
                         title = lines[0] if lines else "阿里司法拍卖标的"
 
                         starting_price = None
                         eval_price = None
                         auction_stage = "一拍"
+                        if "变卖" in title or "变卖" in combined_text:
+                            auction_stage = "变卖"
+                        elif any(k in title or k in combined_text for k in ["二拍", "第二次拍卖", "第二次"]):
+                            auction_stage = "二拍"
+                        elif any(k in title or k in combined_text for k in ["一拍", "第一次拍卖", "第一次"]):
+                            auction_stage = "一拍"
 
                         for line in lines:
                             if "起拍" in line:
@@ -150,23 +170,19 @@ async def fetch_ali_real_auctions() -> List[dict]:
                                 p = parse_price_amount(line)
                                 if p is not None:
                                     starting_price = p
-                            if "二拍" in line:
-                                auction_stage = "二拍"
-                            elif "变卖" in line:
-                                auction_stage = "变卖"
 
                         # 彻底过滤排除机动车辆、重型和大型机械设备
-                        if is_vehicle_or_equipment_item(title, raw_text):
+                        if is_vehicle_or_equipment_item(title, combined_text):
                             continue
 
-                        # 识别标的物类型（聚焦不动产与债权股权，未能识别的严禁默认归为住宅房产，归为“其他资产”）
+                        # 识别标的物类型：严格映射为前端支持的 4 类枚举（"住宅/商业房产"、"工业厂房与土地"、"金融债权与股权"、"其他资产"）
                         category = "其他资产"
                         t_clean = re.sub(r'[\u4e00-\u9fa5]{2,30}(?:公司|分公司|支行|行)(?:名下|持有)?', '', title)
-                        if any(k in title for k in ["股", "证券", "债券", "债权", "资产包"]):
+                        if any(k in title for k in ["股", "证券", "债券", "债权", "资产包", "保单", "份额"]):
                             category = "金融债权与股权"
-                        elif any(k in title for k in ["地块", "土地", "厂房", "仓库", "工业园"]):
+                        elif any(k in title for k in ["地块", "土地", "厂房", "仓库", "工业园", "工业用地", "林权", "矿权", "构筑物"]):
                             category = "工业厂房与土地"
-                        elif any(k in t_clean for k in ["房产", "住宅", "商品房", "公寓", "排屋", "大厦", "门面", "商铺", "车位", "车库", "人防车位", "室", "号楼", "单元", "楼房"]):
+                        elif any(k in t_clean for k in ["房产", "住宅", "商品房", "公寓", "排屋", "大厦", "门面", "商铺", "车位", "车库", "人防车位", "室", "号楼", "单元", "楼房", "写字楼", "别墅"]):
                             category = "住宅/商业房产"
 
                         # 尝试从标题中提取涉案城市或法院
@@ -243,8 +259,6 @@ async def fetch_ali_real_auctions() -> List[dict]:
     warning_msg = " ; ".join(warning_reasons) if warning_reasons else None
     return results, warning_msg
 
-from backend.database import SessionLocal
-
 def crawl_ali_auctions(db: Optional[Session] = None, max_items: int = 40) -> Tuple[List[CourtNotice], int, Optional[str]]:
     """主入口：执行抓取并存入数据库，返回(新记录, 发现总数, 警告信息)"""
     items, warning_msg = run_async(fetch_ali_real_auctions())
@@ -274,7 +288,7 @@ def crawl_ali_auctions(db: Optional[Session] = None, max_items: int = 40) -> Tup
                     raw_id=item["raw_id"],
                     court_name=item["court_name"],
                     case_number=item["case_number"],
-                    parties=item["parties"],
+                    parties=item.get("parties", ""),
                     notice_type=item["notice_type"],
                     module_type=mod_type,
                     title=item["title"],
@@ -318,3 +332,48 @@ def crawl_ali_auctions(db: Optional[Session] = None, max_items: int = 40) -> Tup
 
     print(f"[ali_crawler] Live scraped {len(items)} items, new ingested: {len(new_records)}")
     return new_records, len(items), warning_msg
+
+async def run_ali_manual_verification(timeout_sec: int = 120):
+    """
+    唤起有头可视化浏览器窗口（headless=False），使用持久化 ali_profile 目录，
+    打开阿里拍卖页面供用户手动拖动滑块验证码或登录淘宝，完成后持久化本地 Cookie。
+    """
+    print(f"[ali_crawler] Launching visible browser for manual slider verification (timeout={timeout_sec}s)...")
+    async with async_playwright() as p:
+        user_data_dir = os.path.join(DATA_DIR, "ali_profile")
+        os.makedirs(user_data_dir, exist_ok=True)
+        try:
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
+                headless=False,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--no-sandbox',
+                    '--disable-infobars',
+                    '--start-maximized',
+                    '--lang=zh-CN'
+                ],
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                locale="zh-CN",
+                viewport=None
+            )
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            page = await context.new_page()
+            await page.goto("https://sf.taobao.com/item_list.htm?province=%BA%D3%C4%CF&order=createTime_desc", timeout=30000)
+            
+            start_t = datetime.now()
+            while (datetime.now() - start_t).total_seconds() < timeout_sec:
+                try:
+                    if len(context.pages) == 0:
+                        break
+                    await asyncio.sleep(2)
+                except Exception:
+                    break
+            try:
+                await context.close()
+            except Exception:
+                pass
+            print("[ali_crawler] Manual verification session closed and cookies persisted.")
+        except Exception as e:
+            print(f"[ali_crawler] Manual verification context note: {e}")
+
