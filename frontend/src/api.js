@@ -100,6 +100,7 @@ export async function fetchNotices(params = {}) {
   if (params.sortBy) query.append('sort_by', params.sortBy);
   if (params.starredOnly) query.append('starred_only', 'true');
   if (params.timeRange) query.append('time_range', params.timeRange);
+  if (params.noteTag) query.append('note_tag', params.noteTag);
 
   const pageNum = params.page || 1;
   const pageSizeNum = params.pageSize || 20;

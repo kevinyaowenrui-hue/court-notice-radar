@@ -563,68 +563,50 @@ async def fetch_jd_real_auctions() -> List[dict]:
 
         page.on('response', on_response)
 
-        # 核心抓取源 1：河南属地法拍房产与大盘 (provinceId=7&sortType=10 最新上架优先) 翻页遍历 1~4 页
-        try:
-            print("[jd_crawler] Accessing JD Henan Focus: https://pmsearch.jd.com/?provinceId=7&sortType=10")
-            await page.goto("https://pmsearch.jd.com/?provinceId=7&sortType=10", timeout=30000, wait_until="networkidle")
-            await page.wait_for_timeout(2000)
+        # 覆盖全省大盘 + 18 地级市分流 + 破产强清/金融资产/债权/工业地产
+        henan_18_cities = [
+            "郑州", "洛阳", "南阳", "新乡", "商丘", "周口", "驻马店", "信阳",
+            "平顶山", "安阳", "开封", "焦作", "许昌", "濮阳", "漯河", "三门峡", "鹤壁", "济源"
+        ]
+        key_dimensions = [
+            ("河南大盘", "https://pmsearch.jd.com/?provinceId=7&sortType=10"),
+            ("住宅用房", "https://pmsearch.jd.com/?provinceId=7&pawnThirdCateId=15&sortType=10"),
+            ("商业工业", "https://pmsearch.jd.com/?provinceId=7&pawnThirdCateId=14&sortType=10"),
+            ("金融债权", "https://pmsearch.jd.com/?provinceId=7&pawnThirdCateId=5&sortType=10"),
+            ("破产重整", "https://pmsearch.jd.com/?provinceId=7&keyword=%E7%A0%B4%E4%BA%A7&sortType=10"),
+            ("强制清算", "https://pmsearch.jd.com/?provinceId=7&keyword=%E5%BC%BA%E6%B8%85&sortType=10"),
+            ("工业土地", "https://pmsearch.jd.com/?provinceId=7&keyword=%E5%B7%A5%E4%B8%9A&sortType=10"),
+            ("河南法院", "https://pmsearch.jd.com/?keyword=%E6%B2%B3%E5%8D%97%E6%B3%95%E9%99%A2&sortType=10")
+        ]
 
-            for p_idx in range(2, 5):
-                next_btn = await page.query_selector('button:has-text("下一页")')
-                if next_btn:
-                    await next_btn.click()
-                    await page.wait_for_timeout(2500)
-                else:
-                    break
-        except Exception as e:
-            print(f"[jd_crawler] Error on Henan province search: {e}")
+        search_tasks = []
+        for dim_name, base_url in key_dimensions:
+            max_p = 4 if dim_name in ["河南大盘", "住宅用房"] else 2
+            search_tasks.append((dim_name, base_url, max_p))
 
-        # 核心抓取源 2：河南司法房产专场 (pawnThirdCateId=15 住宅用房, 最新上架)
-        try:
-            print("[jd_crawler] Accessing JD Henan Residential: https://pmsearch.jd.com/?provinceId=7&pawnThirdCateId=15&sortType=10")
-            await page.goto("https://pmsearch.jd.com/?provinceId=7&pawnThirdCateId=15&sortType=10", timeout=30000, wait_until="networkidle")
-            await page.wait_for_timeout(2000)
-            for _ in range(2):
-                next_btn = await page.query_selector('button:has-text("下一页")')
-                if next_btn:
-                    await next_btn.click()
-                    await page.wait_for_timeout(2000)
-                else:
-                    break
-        except Exception as e:
-            print(f"[jd_crawler] Error on residential real estate: {e}")
+        for city in henan_18_cities:
+            kw_url = f"https://pmsearch.jd.com/?provinceId=7&keyword={urllib.parse.quote(city)}&sortType=10"
+            search_tasks.append((f"{city}分流", kw_url, 2))
 
-        # 核心抓取源 3：河南金融债权与资产处置专场 (pawnThirdCateId=5 债权, 最新上架)
-        try:
-            print("[jd_crawler] Accessing JD Henan Debt: https://pmsearch.jd.com/?provinceId=7&pawnThirdCateId=5&sortType=10")
-            await page.goto("https://pmsearch.jd.com/?provinceId=7&pawnThirdCateId=5&sortType=10", timeout=30000, wait_until="networkidle")
-            await page.wait_for_timeout(2000)
-        except Exception as e:
-            print(f"[jd_crawler] Error on debt assets: {e}")
+        for task_name, base_url, max_pages in search_tasks:
+            try:
+                for p_idx in range(1, max_pages + 1):
+                    target_url = f"{base_url}&page={p_idx}" if p_idx > 1 else base_url
+                    cnt_before = len(results_map)
+                    print(f"[jd_crawler] Accessing [{task_name}] page {p_idx}: {target_url}")
+                    try:
+                        await page.goto(target_url, timeout=25000, wait_until="networkidle")
+                        await page.wait_for_timeout(1800)
+                    except Exception as ge:
+                        print(f"[jd_crawler] goto note ({task_name} p={p_idx}): {ge}")
 
-        # 核心抓取源 4：河南商业用房与工业厂房 (pawnThirdCateId=14 商业, 最新上架)
-        try:
-            print("[jd_crawler] Accessing JD Henan Commercial: https://pmsearch.jd.com/?provinceId=7&pawnThirdCateId=14&sortType=10")
-            await page.goto("https://pmsearch.jd.com/?provinceId=7&pawnThirdCateId=14&sortType=10", timeout=30000, wait_until="networkidle")
-            await page.wait_for_timeout(2000)
-        except Exception as e:
-            print(f"[jd_crawler] Error on commercial real estate: {e}")
-
-        # 核心抓取源 5：搜索词“河南法院”定向抓取司法拍卖公告 (最新上架)
-        try:
-            print("[jd_crawler] Accessing keyword 河南法院: https://pmsearch.jd.com/?keyword=%E6%B2%B3%E5%8D%97%E6%B3%95%E9%99%A2&sortType=10")
-            await page.goto("https://pmsearch.jd.com/?keyword=%E6%B2%B3%E5%8D%97%E6%B3%95%E9%99%A2&sortType=10", timeout=30000, wait_until="networkidle")
-            await page.wait_for_timeout(2000)
-        except Exception as e:
-            print(f"[jd_crawler] Error on keyword 河南法院: {e}")
-
-        # 核心抓取源 6：搜索词“破产”定向抓取企业破产资产与重整拍卖 (最新上架)
-        try:
-            print("[jd_crawler] Accessing keyword 破产: https://pmsearch.jd.com/?provinceId=7&keyword=%E7%A0%B4%E4%BA%A7&sortType=10")
-            await page.goto("https://pmsearch.jd.com/?provinceId=7&keyword=%E7%A0%B4%E4%BA%A7&sortType=10", timeout=30000, wait_until="networkidle")
-            await page.wait_for_timeout(2000)
-        except Exception as e:
-            print(f"[jd_crawler] Error on keyword 破产: {e}")
+                    new_found = len(results_map) - cnt_before
+                    print(f"[jd_crawler] [{task_name}] page {p_idx}: captured {new_found} new items (total: {len(results_map)})")
+                    if new_found == 0 and p_idx > 1:
+                        print(f"[jd_crawler] [{task_name}] page {p_idx} has 0 new items, early stopping pagination.")
+                        break
+            except Exception as te:
+                print(f"[jd_crawler] Task {task_name} note: {te}")
 
         # DOM 兜底分析：提取页面上的额外超链接（过滤小物件）
         try:

@@ -68,6 +68,8 @@ export default function NoticeTableView({
             <th className="py-2.5 px-3 w-36">处置法院 / 机构</th>
             <th className="py-2.5 px-3 w-20">渠道</th>
             <th className="py-2.5 px-3 w-28 text-right">起拍价</th>
+            <th className="py-2.5 px-3 w-24 text-right">建筑面积</th>
+            <th className="py-2.5 px-3 w-28 text-right">折合单价</th>
             <th className="py-2.5 px-3 w-28 text-right">评估价</th>
             <th className="py-2.5 px-3 w-20 text-center">折扣率</th>
             <th className="py-2.5 px-3 w-32">发布时间</th>
@@ -183,6 +185,16 @@ export default function NoticeTableView({
                   {item.starting_price != null 
                     ? `¥${(item.starting_price >= 10000) ? `${(item.starting_price / 10000).toFixed(1)}万` : item.starting_price.toLocaleString('zh-CN')}`
                     : '--'}
+                </td>
+
+                {/* 建筑面积 */}
+                <td className="py-2.5 px-3 text-right font-mono text-[11px] text-[#cbd5e1] tabular-nums">
+                  {item.area_sqm != null ? `${item.area_sqm}㎡` : '--'}
+                </td>
+
+                {/* 折合单价 */}
+                <td className="py-2.5 px-3 text-right font-mono text-[11px] text-amber-300 tabular-nums">
+                  {item.unit_price != null ? `¥${item.unit_price.toLocaleString('zh-CN')}/㎡` : '--'}
                 </td>
 
                 {/* 评估价 */}

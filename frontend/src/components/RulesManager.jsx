@@ -5,6 +5,7 @@ import { fetchRules, createRule, updateRule, deleteRule, previewRule } from '../
 const ALL_PLATFORMS = [
   { id: 'ali', label: '阿里法拍' },
   { id: 'jd', label: '京东拍卖' },
+  { id: 'rmfysszc', label: '人民法院诉讼资产网' },
   { id: 'rmfyb', label: '《人民法院报》公告网' },
   { id: 'local_paper', label: '53BK 地方报纸专版' },
   { id: 'caa', label: '中拍平台·信息公示' },
@@ -17,7 +18,11 @@ const ALL_MODULES = [
   { id: '债权转让', label: '💼 债权资产包' }
 ];
 
-const PRESET_CITIES = ['全省', '郑州', '洛阳', '开封', '商丘', '新乡', '南阳', '许昌', '平顶山', '焦作', '安阳'];
+const PRESET_CITIES = [
+  '全省', '郑州', '洛阳', '开封', '平顶山', '安阳', '鹤壁',
+  '新乡', '焦作', '濮阳', '许昌', '漯河', '三门峡', '南阳',
+  '商丘', '信阳', '周口', '驻马店', '济源'
+];
 
 export default function RulesManager() {
   const [rules, setRules] = useState([]);
@@ -28,7 +33,7 @@ export default function RulesManager() {
   // Form State
   const [name, setName] = useState('');
   const [isActive, setIsActive] = useState(true);
-  const [platforms, setPlatforms] = useState(['ali', 'jd', 'rmfyb', 'local_paper', 'caa', 'ggzy']);
+  const [platforms, setPlatforms] = useState(['ali', 'jd', 'rmfysszc', 'rmfyb', 'local_paper', 'caa', 'ggzy']);
   const [selectedModules, setSelectedModules] = useState([]);
   const [selectedCities, setSelectedCities] = useState([]);
   const [courtsInput, setCourtsInput] = useState('');
@@ -65,7 +70,7 @@ export default function RulesManager() {
     setEditingRule(null);
     setName('');
     setIsActive(true);
-    setPlatforms(['ali', 'jd', 'rmfyb', 'local_paper', 'caa', 'ggzy']);
+    setPlatforms(['ali', 'jd', 'rmfysszc', 'rmfyb', 'local_paper', 'caa', 'ggzy']);
     setSelectedModules([]);
     setSelectedCities([]);
     setCourtsInput('');
@@ -245,6 +250,7 @@ export default function RulesManager() {
                     const labelMap = {
                       ali: '阿里法拍',
                       jd: '京东拍卖',
+                      rmfysszc: '诉讼资产网',
                       rmfyb: '法院报',
                       local_paper: '地方报',
                       caa: '中拍平台',

@@ -300,21 +300,46 @@ def crawl_rmfysszc_notices(db: Optional[Session] = None, max_pages: int = 2) -> 
     all_raw_items = []
     seen_ids = set()
 
-    # 多维定向搜索词：覆盖河南全部18地市 + 全国大盘与一拍二拍房产
-    search_keywords = [
+    # 预载存量已有的 rmfysszc 标的 raw_id，用于增量翻页早停
+    known_db_raw_ids = set()
+    try:
+        with SessionLocal() as s:
+            rows = s.query(CourtNotice.raw_id).filter(CourtNotice.platform == "rmfysszc").all()
+            for (rid,) in rows:
+                if rid:
+                    known_db_raw_ids.add(str(rid))
+    except Exception as e:
+        print(f"[rmfysszc] Pre-fetch existing ids note: {e}")
+
+    # 覆盖河南全部18地级市 + 26个重点县级市/省直管县 + 重点业务词
+    henan_core_cities = [
         "", "河南", "郑州", "洛阳", "南阳", "商丘", "开封", "平顶山", "安阳", "新乡",
-        "焦作", "许昌", "周口", "驻马店", "信阳", "漯河", "濮阳", "鹤壁", "三门峡", "济源",
-        "房产", "第一次拍卖", "第二次拍卖"
+        "焦作", "许昌", "周口", "驻马店", "信阳", "漯河", "濮阳", "鹤壁", "三门峡", "济源"
     ]
+    henan_counties_and_terms = [
+        "巩义", "汝州", "邓州", "永城", "固始", "兰考", "滑县", "长垣", "鹿邑", "新蔡",
+        "禹州", "长葛", "林州", "项城", "偃师", "新郑", "新密", "登封", "荥阳", "孟州",
+        "沁阳", "卫辉", "辉县", "舞钢", "灵宝", "义马",
+        "变卖", "破产", "清算", "重整", "股权", "债权", "工业", "土地", "房产", "第一次拍卖", "第二次拍卖"
+    ]
+    search_keywords = henan_core_cities + henan_counties_and_terms
 
     for kw in search_keywords:
-        for p in range(1, max_pages + 1):
+        kw_max_pages = 5 if kw in ["", "河南", "郑州", "洛阳", "南阳", "房产", "第一次拍卖", "第二次拍卖", "变卖"] else 3
+        for p in range(1, kw_max_pages + 1):
             items = fetch_notice_list(keyword=kw, page=p)
+            if not items:
+                break
+
+            # 存量早停判断：若当前页所有条目在数据库中均已存在，立即 break 跳出当前关键词翻页循环
+            all_exist = all(str(it['raw_id']) in known_db_raw_ids for it in items)
             for it in items:
                 if it['raw_id'] not in seen_ids:
                     seen_ids.add(it['raw_id'])
                     all_raw_items.append(it)
-            if not items:
+
+            if all_exist:
+                print(f"[rmfysszc] kw='{kw}' p={p}: 当前页全部条目已存在于库中，触达存量边界早停。")
                 break
 
     total_found = len(all_raw_items)

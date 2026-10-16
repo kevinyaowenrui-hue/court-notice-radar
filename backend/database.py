@@ -143,9 +143,26 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 Base = declarative_base()
 
+def create_db_indexes(target_engine=None):
+    """创建 SQLite 高频查询与去重索引，保障万级数据毫秒级响应"""
+    eng = target_engine or engine
+    queries = [
+        "CREATE INDEX IF NOT EXISTS idx_notices_platform_pubtime ON court_notices(platform, publish_time);",
+        "CREATE INDEX IF NOT EXISTS idx_notices_platform_rawid ON court_notices(platform, raw_id);",
+        "CREATE INDEX IF NOT EXISTS idx_notices_henan_city ON court_notices(is_henan, henan_city);",
+        "CREATE INDEX IF NOT EXISTS idx_alerts_notice_id ON alert_events(notice_id);"
+    ]
+    with eng.connect() as conn:
+        for q in queries:
+            try:
+                conn.exec_driver_sql(q)
+            except Exception:
+                pass
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+

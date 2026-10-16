@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Star, Loader2 } from 'lucide-react';
 import { fetchNotices, toggleNoticeStar } from '../api';
+import { PRESET_NOTE_TAGS, getNoteTagBadgeStyle } from '../tagUtils';
 import NoticeItemRow from './NoticeItemRow';
 import NoticeDetailPane from './NoticeDetailPane';
 import Pagination from './Pagination';
@@ -12,6 +13,7 @@ export default function StarredView({ onStarToggled }) {
   const [pageSize, setPageSize] = useState(20);
   const [totalPages, setTotalPages] = useState(1);
   const [selectedModule, setSelectedModule] = useState('');
+  const [selectedTag, setSelectedTag] = useState('');
   const [selectedNotice, setSelectedNotice] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -24,6 +26,7 @@ export default function StarredView({ onStarToggled }) {
       const data = await fetchNotices({
         starredOnly: true,
         moduleType: selectedModule || undefined,
+        noteTag: selectedTag || undefined,
         page,
         pageSize
       });
@@ -51,7 +54,7 @@ export default function StarredView({ onStarToggled }) {
 
   useEffect(() => {
     loadData();
-  }, [page, pageSize, selectedModule]);
+  }, [page, pageSize, selectedModule, selectedTag]);
 
   const handlePageChange = (newPage) => {
     setPage(newPage);
@@ -100,26 +103,49 @@ export default function StarredView({ onStarToggled }) {
           <span className="text-xs text-[#94a3b8] tabular-nums">({total} 件关注)</span>
         </div>
 
-        {/* 模块筛选分段胶囊 */}
-        <div className="flex items-center space-x-1 bg-[#161e31] p-0.5 rounded-md border border-[#1e2638] text-xs">
-          {[
-            { id: '', label: '全部标的' },
-            { id: '拍卖公告', label: '司法拍卖' },
-            { id: '公告', label: '法院公告' },
-            { id: '债权转让', label: '债权转让' }
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => { setSelectedModule(tab.id); setPage(1); }}
-              className={`px-3 py-1 rounded transition-all font-medium ${
-                selectedModule === tab.id
-                  ? 'bg-[#182238] text-amber-300 border border-amber-500/30 font-semibold shadow-xs'
-                  : 'text-[#94a3b8] hover:text-[#f1f5f9]'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+        <div className="flex items-center space-x-2 flex-wrap gap-y-2">
+          {/* 尽调处置阶段漏斗 */}
+          <div className="flex items-center space-x-1 bg-[#161e31] p-0.5 rounded-md border border-[#1e2638] text-xs">
+            <span className="text-[10px] text-[#64748b] px-1 font-medium">尽调漏斗:</span>
+            {[
+              { id: '', label: '全部' },
+              ...PRESET_NOTE_TAGS.map(t => ({ id: t.label, label: t.label }))
+            ].map(tag => (
+              <button
+                key={tag.id}
+                onClick={() => { setSelectedTag(tag.id); setPage(1); }}
+                className={`px-2 py-0.5 rounded text-[11px] transition-all font-medium ${
+                  selectedTag === tag.id
+                    ? (tag.id ? `${getNoteTagBadgeStyle(tag.id)} font-bold shadow-xs` : 'bg-[#182238] text-amber-300 border border-amber-500/40 font-semibold shadow-xs')
+                    : 'text-[#94a3b8] hover:text-[#f1f5f9]'
+                }`}
+              >
+                {tag.label}
+              </button>
+            ))}
+          </div>
+
+          {/* 模块筛选分段胶囊 */}
+          <div className="flex items-center space-x-1 bg-[#161e31] p-0.5 rounded-md border border-[#1e2638] text-xs">
+            {[
+              { id: '', label: '全部标的' },
+              { id: '拍卖公告', label: '司法拍卖' },
+              { id: '公告', label: '法院公告' },
+              { id: '债权转让', label: '债权转让' }
+            ].map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => { setSelectedModule(tab.id); setPage(1); }}
+                className={`px-2.5 py-0.5 rounded text-[11px] transition-all font-medium ${
+                  selectedModule === tab.id
+                    ? 'bg-[#182238] text-amber-300 border border-amber-500/30 font-semibold shadow-xs'
+                    : 'text-[#94a3b8] hover:text-[#f1f5f9]'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -177,6 +203,7 @@ export default function StarredView({ onStarToggled }) {
               if (!state) handleToggleStar(id, false);
             }}
             onNotesUpdated={handleNotesUpdated}
+            onSelectNotice={(item) => setSelectedNotice(item)}
           />
         )}
       </div>

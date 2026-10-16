@@ -41,21 +41,35 @@ export const formatPublishTime = (timeStr) => {
   return clean.slice(0, 16);
 };
 
-// 法拍排雷风险标签高亮样式
+// 法拍排雷风险标签高亮样式（红/黄/绿三级警示系统）
 export const getRiskTagBadgeStyle = (tag) => {
   switch (tag) {
+    // 🟢 安全绿灯（确定性加分项）
     case '已腾空':
     case '无租约':
     case '税费各付':
     case '有产权证':
+    case '法拍贷支持':
       return 'bg-emerald-950/60 text-emerald-300 border border-emerald-700/60';
+
+    // 🔴 致命红灯（清场死结/产权陷阱，一票否决）
+    case '设立居住权':
+    case '仅拍部分份额':
+    case '不负责清场':
     case '未腾空':
-    case '买受人全担税':
+    case '划拨/集体土地':
+    case '违建/无产证':
     case '无产权证':
-      return 'bg-rose-950/60 text-rose-300 border border-rose-700/60 font-semibold';
+      return 'bg-rose-950/70 text-rose-300 border border-rose-700/70 font-semibold shadow-xs';
+
+    // 🟡 警惕黄灯（必须核减成本/现场查勘）
     case '带租约':
+    case '买受人全担税':
+    case '垫付税费':
+    case '欠费买受人承担':
     case '存在抵押':
       return 'bg-amber-950/60 text-amber-300 border border-amber-700/60';
+
     default:
       return 'bg-slate-800/60 text-slate-300 border border-slate-700';
   }

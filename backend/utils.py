@@ -568,46 +568,103 @@ async def launch_smart_browser(playwright_instance, headless: bool = True):
     # 3. 回退默认 Chromium
     return await playwright_instance.chromium.launch(headless=headless)
 
+def extract_area_and_unit_price(title: str = "", content: str = "", starting_price: Optional[float] = None) -> Tuple[Optional[float], Optional[float]]:
+    """
+    智能提取房产建筑面积 (㎡) 并计算折合单价 (元/㎡)：
+    优先从明确的「建筑面积/房屋面积/专有面积」匹配，次选「XX平方米/㎡」，
+    结合起拍价 starting_price 换算真实单价，辅助投资客秒判性价比与剔除注水评估价。
+    """
+    corpus = f"{title or ''} {(content or '')[:800]}"
+    area = None
+
+    # 1. 明确关键词匹配面积
+    area_patterns = [
+        r'(?:建筑面积|套内面积|房屋面积|专有面积|产权面积|总面积|面积)\s*[：:为约]?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:平方米|平方|平米|㎡|m2|m²)',
+        r'([0-9]+(?:\.[0-9]+)?)\s*(?:平方米|平米|㎡|m2|m²)\s*(?:住宅|房屋|商品房|商铺|门面|公寓|写字楼|房产|房)',
+        r'（\s*([0-9]+(?:\.[0-9]+)?)\s*(?:平方米|平米|㎡)\s*）',
+        r'\(\s*([0-9]+(?:\.[0-9]+)?)\s*(?:平方米|平米|㎡)\s*\)'
+    ]
+    for pat in area_patterns:
+        m = re.search(pat, corpus, re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1))
+                if 10.0 <= val <= 50000.0:
+                    area = round(val, 2)
+                    break
+            except Exception:
+                pass
+
+    unit_price = None
+    if area and starting_price and starting_price > 1000:
+        unit_price = round(starting_price / area, 2)
+
+    return area, unit_price
+
 def extract_risk_tags(text: str) -> list[str]:
     """
-    自动从标的标题或正文中提取法拍核心排雷标签：
-    - 已腾空 / 未腾空
-    - 无租约 / 带租约
-    - 税费各付 / 买受人全担税
-    - 无产权证 / 有产权证
-    - 存在抵押
+    实战派法拍 10 大核心排雷矩阵（红黄绿分级警示）：
+    🔴 致命红灯（清场死结/产权陷阱）：不负责清场、设立居住权、仅拍部分份额、划拨/集体土地、违建/无产证
+    🟡 警惕黄灯（必须核减成本）：带租约、买受人全担税、垫付税费、欠费买受人承担、存在抵押
+    🟢 安全绿灯（确定性加分项）：已腾空、无租约、税费各付、有产权证、法拍贷支持
     """
     if not text:
         return []
     tags = []
 
-    # 1. 腾空交付情况（先判未腾空，避免被局部词汇误判）
-    if re.search(r'未腾空|暂未腾空|尚未腾空|有人居住|被执行人居住|由被执行人使用|由案外人使用|有人占用|被执行人占用|占用中|暂不腾退|未搬离', text):
+    # 1. 致命红灯：居住权 (《民法典》新规，终身无法腾退；排除“未设立居住权/无居住权”)
+    if not re.search(r'无居住权|未设立居住权|未发现.*居住权|未登记居住权|暂无居住权', text):
+        if re.search(r'已设立居住权|设有居住权|存在居住权|设立有居住权|设立居住权|被设立居住权', text):
+            tags.append("设立居住权")
+
+    # 2. 致命红灯：共有产权与部分份额拍卖 (无法独立变现处置)
+    if re.search(r'拍卖.*(?:部分份额|50%|二分之一|1/2|共有份额)|共有产权|仅拍卖.*份额|部分产权|共有份额', text):
+        tags.append("仅拍部分份额")
+
+    # 3. 致命红灯：法院不负责清场 / 腾退责任转嫁
+    if re.search(r'不负责腾退|不负责清场|买受人自行解决|买受人自行腾空|不负责交付|自行清场|自行腾退|不承担腾退|由买受人负责清场|由买受人自行与占用人协商|现状拍卖，自行解决', text):
+        tags.append("不负责清场")
+    elif re.search(r'未腾空|暂未腾空|尚未腾空|有人居住|被执行人居住|由被执行人使用|由案外人使用|有人占用|被执行人占用|占用中|暂不腾退|未搬离', text):
         tags.append("未腾空")
-    elif re.search(r'已腾空|已清空|无障碍交割|房屋空置|现已空置|已搬空|现空置', text):
+    elif re.search(r'已腾空|已清空|无障碍交割|房屋空置|现已空置|已搬空|现空置|法院负责腾空|法院负责清退', text):
         tags.append("已腾空")
 
-    # 2. 租赁占有情况（先判无租约）
-    if re.search(r'无租[约赁]|未见租[约赁]|无承租人|未发现租赁|无租赁合同|未有租赁|无租赁', text):
-        tags.append("无租约")
-    elif re.search(r'带租[约赁]|有租[约赁]|存在租赁|租赁期至|有人承租|租赁合同|承租期至', text):
-        tags.append("带租约")
+    # 4. 致命红灯：土地性质风险（划拨土地需补天价出让金，集体土地无法过户）
+    if re.search(r'划拨土地|土地性质为划拨|划拨地|划拨性质|集体土地|宅基地|集体建设用地|出让金由买受人承担|补缴土地出让金', text):
+        tags.append("划拨/集体土地")
 
-    # 3. 税费承担方案（先判税费各付）
-    if re.search(r'税费各[自担付]|各自承担.*税费|各自缴[纳付]|各付税费|税费各自分担|税费由双方各自承担', text):
-        tags.append("税费各付")
-    elif re.search(r'买受人承担全部税费|税费均由买受人|买受人全担税|全部税费由买受人|一切税费均由买受人|由买受人承担.*税费|税费.*全部由买受人', text):
-        tags.append("买受人全担税")
-
-    # 4. 权证登记情况（先判无产权证）
-    if re.search(r'无产权证|暂未办理产权证|未取得权属证书|未办理不动产权证|暂无房产证|无不动产权证|暂无不动产登记', text):
-        tags.append("无产权证")
+    # 5. 权证与违建情况
+    if re.search(r'无产权证|无房产证|暂未办理产权证|未取得权属证书|未办理不动产权证|暂无房产证|无不动产权证|暂无不动产登记|违章建筑|违法建筑|未批先建|违建', text):
+        tags.append("违建/无产证")
     elif re.search(r'不动产权证号|房产证号|房屋所有权证|权属证书号', text):
         tags.append("有产权证")
 
-    # 5. 抵押情况
-    if re.search(r'存在抵押|设有抵押|已抵押登记|有抵押', text):
-        tags.append("存在抵押")
+    # 6. 租赁占有情况（优先判定否定词“无租赁合同/未发现租赁”，防止被“租赁合同”子串误判）
+    if re.search(r'无租[约赁]|未见租[约赁]|无承租人|未发现.*租赁|无租赁合同|未有租赁|无租赁|不带租', text):
+        tags.append("无租约")
+    elif re.search(r'带租[约赁]|有租[约赁]|存在租赁|租赁期至|有人承租|有租赁合同|存在租赁合同|承租期至|长租', text):
+        tags.append("带租约")
+
+    # 7. 税费与垫付陷阱
+    if re.search(r'先行垫付|买受人垫付|垫付后|自行向原权利人追偿|凭票向法院退付|垫交|垫付税费', text):
+        tags.append("垫付税费")
+    elif re.search(r'买受人承担(?:全部|一切|所有)?税费|税费均由买受人|买受人全担税|全部税费由买受人|一切税费均?由买受人|由买受人承担.*税费|税费.*全部由买受人', text):
+        tags.append("买受人全担税")
+    elif re.search(r'税费各[自担付]|各自承担.*税费|各自缴[纳付]|各付税费|税费各自分担|税费由双方各自承担', text):
+        tags.append("税费各付")
+
+    # 8. 欠费转嫁
+    if re.search(r'欠缴的物业|物业(?:欠)?费.*买受人|水电费.*买受人|欠费.*由?买受人|拖欠的物业|取暖费.*买受人|欠缴.*费用.*买受人', text):
+        tags.append("欠费买受人承担")
+
+    # 9. 抵押情况（排除“无抵押/未设有抵押”）
+    if not re.search(r'无抵押|未设定抵押|未设立抵押|未设有抵押|未发现.*抵押', text):
+        if re.search(r'存在抵押|设有抵押|已抵押登记|有抵押', text):
+            tags.append("存在抵押")
+
+    # 10. 法拍贷/按揭支持 (降低参拍门槛)
+    if re.search(r'可申请贷款|支持贷款|法拍贷|按揭贷款|贷款须知|协助办理贷款', text):
+        tags.append("法拍贷支持")
 
     return tags
 

@@ -281,155 +281,169 @@ def fetch_shangqiu_cqjy(max_pages: int = 2) -> List[dict]:
     print(f"[ggzy_crawler] Shangqiu fetched {len(results)} notices.")
     return results
 
-def fetch_henan_provincial_cqjy(page_size: int = 30, kw: str = "") -> List[dict]:
-    """抓取河南省公共资源交易中心-全省产权交易大盘 (覆盖全省18地市)"""
+def fetch_henan_provincial_cqjy(page_size: int = 25, kw: str = "", category_num: str = "002003", max_pages: int = 5) -> List[dict]:
+    """抓取河南省公共资源交易中心-全省产权交易大盘 (支持多栏目、多页翻页与跨地市检索)"""
     results = []
-    print(f"[ggzy_crawler] Fetching Henan Provincial GGZY all-cities property transactions (kw='{kw}')...")
-    try:
-        url = 'https://hnsggzyjy.henan.gov.cn/EpointWebBuilder/rest/frontAppCustomAction/getPageInfoListNewYzm'
-        post_data = (
-            f"siteGuid=7eb5f7f1-9041-43ad-8e13-8fcb82ea831a&categoryNum=002003"
-            f"&kw={kw}&startDate=&endDate=&pageIndex=0&pageSize={page_size}&jytype=&YZM=&ImgGuid=&xiaqucode="
-        )
-        req_headers = {
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'Referer': 'https://hnsggzyjy.henan.gov.cn/jyxx/002003/transaction_notice.html'
-        }
-        out = safe_curl_or_urllib(url, post_data=post_data, headers=req_headers, timeout=12)
-        data = json.loads(out)
-        items = data.get('custom', {}).get('infodata', [])
+    print(f"[ggzy_crawler] Fetching Henan Provincial GGZY (cat={category_num}, kw='{kw}', max_pages={max_pages})...")
+    url = 'https://hnsggzyjy.henan.gov.cn/EpointWebBuilder/rest/frontAppCustomAction/getPageInfoListNewYzm'
+    req_headers = {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Referer': 'https://hnsggzyjy.henan.gov.cn/jyxx/002003/transaction_notice.html'
+    }
 
-        for it in items:
-            try:
-                infoid = it.get('infoid')
-                if not infoid:
-                    continue
-                title = it.get('title', '').strip()
-                if not title or is_vehicle_or_equipment_item(title):
-                    continue
-                date_str = it.get('infodate', '')
-                xiaquname = it.get('xiaquname') or ""
-                cat_name = it.get('categoryname') or "产权交易"
-                infourl = it.get('infourl', '')
-                detail_url = f"https://hnsggzyjy.henan.gov.cn{infourl}" if infourl.startswith('/') else infourl
+    seen_infoids = set()
+    for page_idx in range(max_pages):
+        try:
+            kw_param = urllib.parse.quote(kw) if kw else ""
+            post_data = (
+                f"siteGuid=7eb5f7f1-9041-43ad-8e13-8fcb82ea831a&categoryNum={category_num}"
+                f"&kw={kw_param}&startDate=&endDate=&pageIndex={page_idx}&pageSize={page_size}&jytype=&YZM=&ImgGuid=&xiaqucode="
+            )
+            out = safe_curl_or_urllib(url, post_data=post_data, headers=req_headers, timeout=12)
+            if not out:
+                break
+            data = json.loads(out)
+            items = data.get('custom', {}).get('infodata', [])
+            if not items:
+                break
 
+            all_page_expired = True
+            for it in items:
                 try:
-                    pub_time = datetime.strptime(date_str, "%Y-%m-%d")
-                except Exception:
-                    pub_time = None
-
-                # 时效门禁校验：放宽至 15 天以完整覆盖近半个月公告
-                if pub_time is not None:
-                    days_diff = (datetime.now() - pub_time).total_seconds() / 86400.0
-                    if days_diff > 15.0:
+                    infoid = it.get('infoid')
+                    if not infoid or infoid in seen_infoids:
                         continue
+                    seen_infoids.add(infoid)
+                    title = it.get('title', '').strip()
+                    if not title or is_vehicle_or_equipment_item(title):
+                        continue
+                    date_str = it.get('infodate', '')
+                    xiaquname = it.get('xiaquname') or ""
+                    cat_name = it.get('categoryname') or "产权交易"
+                    infourl = it.get('infourl', '')
+                    detail_url = f"https://hnsggzyjy.henan.gov.cn{infourl}" if infourl.startswith('/') else infourl
 
-                # 穿透详情页抓取起拍价、评估价及竞价时间（优先curl，自动降级urllib）
-                sp, ep, bs, be = None, None, None, None
-                try:
-                    d_html = safe_curl_or_urllib(detail_url, timeout=12)
-                    if d_html:
-                        sp, ep, bs, be = extract_prices_and_times_from_html(d_html, title)
+                    try:
+                        pub_time = datetime.strptime(date_str, "%Y-%m-%d")
+                    except Exception:
+                        pub_time = None
+
+                    # 时效门禁校验：放宽至 15 天以完整覆盖近半个月公告
+                    if pub_time is not None:
+                        days_diff = (datetime.now() - pub_time).total_seconds() / 86400.0
+                        if days_diff > 15.0:
+                            continue
+                        all_page_expired = False
+                    else:
+                        all_page_expired = False
+
+                    # 穿透详情页抓取起拍价、评估价及竞价时间
+                    sp, ep, bs, be = None, None, None, None
+                    try:
+                        d_html = safe_curl_or_urllib(detail_url, timeout=10)
+                        if d_html:
+                            sp, ep, bs, be = extract_prices_and_times_from_html(d_html, title)
+                    except Exception:
+                        pass
+
+                    content_text = (
+                        f"【河南省公共资源交易中心·全省产权交易大盘】\n"
+                        f"项目名称：{title}\n"
+                        f"所属辖区：{xiaquname or '河南省本级'}\n"
+                        f"业务分类：{cat_name}\n"
+                        f"发布日期：{date_str}\n"
+                    )
+                    if sp:
+                        content_text += f"起拍/挂牌价：¥{sp:,.2f} 元\n"
+                    if ep:
+                        content_text += f"评估/参考价：¥{ep:,.2f} 元\n"
+                    if bs:
+                        content_text += f"竞价开始：{bs.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    if be:
+                        content_text += f"竞价截止：{be.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    content_text += (
+                        f"发布机构：河南省公共资源交易中心\n"
+                        f"官方详情：{detail_url}"
+                    )
+
+                    # 智能地市识别
+                    city = None
+                    city_keywords = {
+                        "郑州": ["郑州", "花花牛", "老君堂", "嵩山", "登封", "新郑", "巩义", "中牟", "荥阳", "新密"],
+                        "开封": ["开封", "杞县", "通许", "尉氏", "兰考"],
+                        "洛阳": ["洛阳", "汇晶", "栾川", "嵩县", "汝阳", "宜阳", "洛宁", "伊川", "新安", "偃师"],
+                        "平顶山": ["平顶山", "中安贸易", "汝州", "舞钢", "鲁山", "宝丰", "叶县", "郏县"],
+                        "安阳": ["安阳", "林州", "滑县", "内黄", "汤阴"],
+                        "鹤壁": ["鹤壁", "鹤煤", "浚县", "淇县"],
+                        "新乡": ["新乡", "卫辉", "辉县", "获嘉", "原阳", "延津", "封丘"],
+                        "焦作": ["焦作", "沁阳", "孟州", "修武", "博爱", "武陟", "温县"],
+                        "濮阳": ["濮阳", "清丰", "南乐", "范县", "台前"],
+                        "许昌": ["许昌", "禹州", "长葛", "鄢陵", "襄城"],
+                        "漯河": ["漯河", "诚尚", "舞阳", "临颍"],
+                        "三门峡": ["三门峡", "义马", "灵宝", "渑池", "卢氏", "陕州"],
+                        "南阳": ["南阳", "邓州", "南召", "镇平", "内乡", "淅川", "社旗", "唐河", "方城", "西峡"],
+                        "商丘": ["商丘", "永城", "睢阳", "梁园", "民权", "睢县", "宁陵", "柘城", "虞城", "夏邑"],
+                        "信阳": ["信阳", "罗山", "光山", "新县", "商城", "固始", "潢川", "淮滨", "息县"],
+                        "周口": ["周口", "益海嘉里", "项城", "扶沟", "西华", "商水", "沈丘", "郸城", "淮阳", "太康", "鹿邑"],
+                        "驻马店": ["驻马店", "确山", "泌阳", "遂平", "西平", "上蔡", "汝南", "平舆", "正阳", "新蔡"],
+                        "济源": ["济源"]
+                    }
+                    for c_name, kws in city_keywords.items():
+                        if any(k in (xiaquname or '') or k in title for k in kws):
+                            city = c_name
+                            break
+                    if not city:
+                        is_hn, matched_city, _ = detect_henan_info(title=title, content=content_text)
+                        city = matched_city or "全省"
+
+                    is_hami = any(k in title or k in (xiaquname or '') for k in ['新疆', '哈密', '伊州', '伊吾', '巴里坤'])
+                    if is_hami:
+                        is_henan = False
+                        henan_city = None
+                        henan_tag = None
+                        court_display = "河南省公共资源交易中心 (哈密)"
+                    else:
+                        is_henan = True
+                        henan_city = city
+                        henan_tag = f"公共资源产权交易 ({city}·{cat_name})"
+                        court_display = f"河南省公共资源交易中心 ({city})"
+
+                    clean_sp = round(sp, 2) if sp is not None else None
+                    clean_ep = round(ep, 2) if ep is not None else None
+                    if clean_sp is not None and clean_ep is not None:
+                        if clean_sp == clean_ep:
+                            clean_ep = None
+                        elif clean_sp > clean_ep:
+                            clean_sp, clean_ep = clean_ep, clean_sp
+
+                    results.append({
+                        "raw_id": f"hns_{infoid}",
+                        "court_name": court_display,
+                        "case_number": "",
+                        "parties": "",
+                        "notice_type": f"公共资源产权交易·{cat_name}",
+                        "title": title,
+                        "content_text": content_text,
+                        "publish_time": pub_time,
+                        "source_url": detail_url,
+                        "starting_price": clean_sp,
+                        "eval_price": clean_ep,
+                        "bidding_start": bs,
+                        "bidding_end": be,
+                        "is_henan": is_henan,
+                        "henan_city": henan_city,
+                        "henan_tag": henan_tag
+                    })
                 except Exception:
-                    pass
+                    continue
 
-                content_text = (
-                    f"【河南省公共资源交易中心·全省产权交易大盘】\n"
-                    f"项目名称：{title}\n"
-                    f"所属辖区：{xiaquname or '河南省本级'}\n"
-                    f"业务分类：{cat_name}\n"
-                    f"发布日期：{date_str}\n"
-                )
-                if sp:
-                    content_text += f"起拍/挂牌价：¥{sp:,.2f} 元\n"
-                if ep:
-                    content_text += f"评估/参考价：¥{ep:,.2f} 元\n"
-                if bs:
-                    content_text += f"竞价开始：{bs.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                if be:
-                    content_text += f"竞价截止：{be.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                content_text += (
-                    f"发布机构：河南省公共资源交易中心\n"
-                    f"官方详情：{detail_url}"
-                )
+            if all_page_expired:
+                break
+        except Exception as e:
+            print(f"[ggzy_crawler] Henan Provincial page {page_idx} error: {e}")
+            break
 
-                # 智能地市识别
-                city = None
-                city_keywords = {
-                    "郑州": ["郑州", "花花牛", "老君堂", "嵩山", "登封", "新郑", "巩义", "中牟", "荥阳", "新密"],
-                    "开封": ["开封", "杞县", "通许", "尉氏", "兰考"],
-                    "洛阳": ["洛阳", "汇晶", "栾川", "嵩县", "汝阳", "宜阳", "洛宁", "伊川", "新安", "偃师"],
-                    "平顶山": ["平顶山", "中安贸易", "汝州", "舞钢", "鲁山", "宝丰", "叶县", "郏县"],
-                    "安阳": ["安阳", "林州", "滑县", "内黄", "汤阴"],
-                    "鹤壁": ["鹤壁", "鹤煤", "浚县", "淇县"],
-                    "新乡": ["新乡", "卫辉", "辉县", "获嘉", "原阳", "延津", "封丘"],
-                    "焦作": ["焦作", "沁阳", "孟州", "修武", "博爱", "武陟", "温县"],
-                    "濮阳": ["濮阳", "清丰", "南乐", "范县", "台前"],
-                    "许昌": ["许昌", "禹州", "长葛", "鄢陵", "襄城"],
-                    "漯河": ["漯河", "诚尚", "舞阳", "临颍"],
-                    "三门峡": ["三门峡", "义马", "灵宝", "渑池", "卢氏", "陕州"],
-                    "南阳": ["南阳", "邓州", "南召", "镇平", "内乡", "淅川", "社旗", "唐河", "方城", "西峡"],
-                    "商丘": ["商丘", "永城", "睢阳", "梁园", "民权", "睢县", "宁陵", "柘城", "虞城", "夏邑"],
-                    "信阳": ["信阳", "罗山", "光山", "新县", "商城", "固始", "潢川", "淮滨", "息县"],
-                    "周口": ["周口", "益海嘉里", "项城", "扶沟", "西华", "商水", "沈丘", "郸城", "淮阳", "太康", "鹿邑"],
-                    "驻马店": ["驻马店", "确山", "泌阳", "遂平", "西平", "上蔡", "汝南", "平舆", "正阳", "新蔡"],
-                    "济源": ["济源"]
-                }
-                for c_name, kws in city_keywords.items():
-                    if any(k in (xiaquname or '') or k in title for k in kws):
-                        city = c_name
-                        break
-                if not city:
-                    is_hn, matched_city, _ = detect_henan_info(title=title, content=content_text)
-                    city = matched_city or "全省"
-
-                # 严格甄别新疆哈密（伊州区、伊吾县、巴里坤县）跨域援建/共享标的
-                is_hami = any(k in title or k in (xiaquname or '') for k in ['新疆', '哈密', '伊州', '伊吾', '巴里坤'])
-                if is_hami:
-                    is_henan = False
-                    henan_city = None
-                    henan_tag = None
-                    court_display = "河南省公共资源交易中心 (哈密)"
-                else:
-                    is_henan = True
-                    henan_city = city
-                    henan_tag = f"公共资源产权交易 ({city}·{cat_name})"
-                    court_display = f"河南省公共资源交易中心 ({city})"
-
-                # 价格精度与倒置研判
-                clean_sp = round(sp, 2) if sp is not None else None
-                clean_ep = round(ep, 2) if ep is not None else None
-                if clean_sp is not None and clean_ep is not None:
-                    if clean_sp == clean_ep:
-                        clean_ep = None
-                    elif clean_sp > clean_ep:
-                        # 挂牌底价与评估价倒置时进行纠正
-                        clean_sp, clean_ep = clean_ep, clean_sp
-
-                results.append({
-                    "raw_id": f"hns_{infoid}",
-                    "court_name": court_display,
-                    "case_number": "",
-                    "parties": "",
-                    "notice_type": f"公共资源产权交易·{cat_name}",
-                    "title": title,
-                    "content_text": content_text,
-                    "publish_time": pub_time,
-                    "source_url": detail_url,
-                    "starting_price": clean_sp,
-                    "eval_price": clean_ep,
-                    "bidding_start": bs,
-                    "bidding_end": be,
-                    "is_henan": is_henan,
-                    "henan_city": henan_city,
-                    "henan_tag": henan_tag
-                })
-            except Exception:
-                continue
-    except Exception as e:
-        print(f"[ggzy_crawler] Henan Provincial fetch failed: {e}")
-
-    print(f"[ggzy_crawler] Henan Provincial fetched {len(results)} notices.")
+    print(f"[ggzy_crawler] Henan Provincial (cat={category_num}, kw='{kw}') fetched {len(results)} notices.")
     return results
 
 def fetch_zhengzhou_cqjy(page_size: int = 25) -> List[dict]:
@@ -550,23 +564,32 @@ from backend.database import SessionLocal
 def crawl_ggzy_publicity(db: Optional[Session] = None, max_items: int = 80) -> Tuple[List[CourtNotice], int]:
     """
     全量抓取河南省及各地级市公共资源交易平台产权交易信息：
-    包含商丘专属专线 + 河南省本级统筹专线 + 郑州市级专线
+    包含商丘专线 + 河南省本级多栏目/翻页/18地市检索 + 郑州市级专线
     """
     print("[ggzy_crawler] Starting GGZY property transactions crawl across Henan...")
     all_raw: List[dict] = []
 
-    # 1. 商丘公共资源交易平台 (用户指定重点平台)
+    # 1. 商丘公共资源交易平台 (重点平台)
     sq_items = fetch_shangqiu_cqjy(max_pages=2)
     all_raw.extend(sq_items)
 
-    # 2. 河南省公共资源交易中心 (全省统筹大盘 + 专项全省债权资产)
-    hn_items = fetch_henan_provincial_cqjy(page_size=25)
-    all_raw.extend(hn_items)
-    hn_debt_items = fetch_henan_provincial_cqjy(page_size=20, kw="%E5%80%BA%E6%9D%83")
+    # 2. 河南省公共资源交易中心：多子栏目（002003001 交易公告、002003002 成交公示、002004001 土地矿权出让）翻页抓取
+    for cat_code in ["002003001", "002003002", "002004001"]:
+        hn_items = fetch_henan_provincial_cqjy(page_size=25, category_num=cat_code, max_pages=5)
+        all_raw.extend(hn_items)
+
+    # 3. 河南省公共资源交易中心：覆盖河南 18 地级市跨地市检索
+    henan_18_cities = ["郑州", "洛阳", "南阳", "新乡", "商丘", "周口", "驻马店", "信阳", "平顶山", "安阳", "开封", "焦作", "许昌", "濮阳", "漯河", "三门峡", "鹤壁", "济源"]
+    for city in henan_18_cities:
+        city_items = fetch_henan_provincial_cqjy(page_size=20, kw=city, category_num="002003", max_pages=2)
+        all_raw.extend(city_items)
+
+    # 专项全省债权资产
+    hn_debt_items = fetch_henan_provincial_cqjy(page_size=20, kw="债权", category_num="002003", max_pages=2)
     all_raw.extend(hn_debt_items)
 
-    # 3. 郑州市公共资源交易中心 (省会重点)
-    zz_items = fetch_zhengzhou_cqjy(page_size=20)
+    # 4. 郑州市公共资源交易中心 (省会重点)
+    zz_items = fetch_zhengzhou_cqjy(page_size=25)
     all_raw.extend(zz_items)
 
     # 入库

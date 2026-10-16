@@ -125,8 +125,10 @@ def check_match(notice: CourtNotice, rule: MonitorRule) -> Optional[dict]:
         if not city_matched:
             return None
 
-    # 5. 价格区间过滤（若为法拍数据）
-    if notice.starting_price is not None:
+    # 5. 价格区间过滤（若规则明确设定了价格下限或上限，无起拍价的标的一律不予匹配）
+    if rule.price_min is not None or rule.price_max is not None:
+        if notice.starting_price is None:
+            return None
         if rule.price_min is not None and notice.starting_price < rule.price_min:
             return None
         if rule.price_max is not None and notice.starting_price > rule.price_max:

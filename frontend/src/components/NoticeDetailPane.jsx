@@ -1,7 +1,357 @@
 import React, { useState, useEffect } from 'react';
-import { ExternalLink, Star, X, Check, Copy, Share2, GitCommit, Layers, ArrowUpRight } from 'lucide-react';
+import { ExternalLink, Star, X, Check, Copy, Share2, GitCommit, Layers, ArrowUpRight, Calculator, CheckSquare, ChevronDown, ChevronUp } from 'lucide-react';
 import { updateNoticeNotes, toggleNoticeStar, fetchRelatedNotices } from '../api';
 import { PRESET_NOTE_TAGS, extractNoteTag, getNoteTagBadgeStyle, getRiskTagBadgeStyle, formatPublishTime } from '../tagUtils';
+
+// 🧮 拿房真实总成本 & 举牌红线测算器
+function InvestorRoiCalculator({ notice, onAppendNotes }) {
+  const [expanded, setExpanded] = useState(false);
+  const [bidPrice, setBidPrice] = useState('');
+  const [marketPrice, setMarketPrice] = useState('');
+  const [deedRate, setDeedRate] = useState(1.5);
+  const [includeSellerTax, setIncludeSellerTax] = useState(false);
+  const [sellerRate, setSellerRate] = useState(6.3);
+  const [arrears, setArrears] = useState('0.5'); // 5000元
+  const [clearance, setClearance] = useState('1.5'); // 15000元
+  const [targetMargin, setTargetMargin] = useState(15); // 15%
+
+  // 初始化或切换标的时重置默认测算数值
+  useEffect(() => {
+    if (notice) {
+      const defaultBid = notice.starting_price ? (notice.starting_price / 10000).toFixed(1) : '';
+      const defaultMarket = notice.eval_price
+        ? (notice.eval_price / 10000).toFixed(1)
+        : (notice.starting_price ? (notice.starting_price * 1.3 / 10000).toFixed(1) : '');
+      setBidPrice(defaultBid);
+      setMarketPrice(defaultMarket);
+      const isSellerTax = Boolean(notice.risk_tags?.some(t => t.includes('全担税') || t.includes('垫付税费')));
+      setIncludeSellerTax(isSellerTax);
+    }
+  }, [notice?.id]);
+
+  const bidNum = parseFloat(bidPrice) || 0;
+  const marketNum = parseFloat(marketPrice) || 0;
+  const arrearsNum = parseFloat(arrears) || 0;
+  const clearanceNum = parseFloat(clearance) || 0;
+  const deedTaxWan = bidNum * (deedRate / 100);
+  const sellerTaxWan = includeSellerTax ? (bidNum * (sellerRate / 100)) : 0;
+  const totalCostWan = bidNum + deedTaxWan + sellerTaxWan + arrearsNum + clearanceNum;
+
+  const area = notice?.area_sqm || 0;
+  const actualUnitPrice = area > 0 ? Math.round((totalCostWan * 10000) / area) : 0;
+  const grossProfitWan = marketNum - totalCostWan;
+  const roiPercent = totalCostWan > 0 ? ((grossProfitWan / totalCostWan) * 100).toFixed(1) : 0;
+
+  // 举牌红线封顶计算
+  const taxMultiplier = 1 + (deedRate + (includeSellerTax ? sellerRate : 0)) / 100;
+  const totalCostCap = marketNum / (1 + targetMargin / 100);
+  const maxBidWan = Math.max(0, (totalCostCap - arrearsNum - clearanceNum) / taxMultiplier).toFixed(1);
+
+  const handleSyncToNotes = () => {
+    const summary = `【举牌红线测算】拿房总成本¥${totalCostWan.toFixed(1)}万(契税¥${deedTaxWan.toFixed(2)}万${includeSellerTax ? `+转嫁税¥${sellerTaxWan.toFixed(2)}万` : ''}+杂费¥${(arrearsNum+clearanceNum).toFixed(1)}万)${actualUnitPrice > 0 ? ` 折合到手¥${actualUnitPrice.toLocaleString()}/㎡` : ''}，在预期去化¥${marketNum}万下保${targetMargin}%收益举牌上限【¥${maxBidWan}万】`;
+    if (onAppendNotes) {
+      onAppendNotes(summary);
+    }
+  };
+
+  return (
+    <div className="bg-[#121827] rounded-lg border border-[#1e2638] overflow-hidden">
+      <div
+        onClick={() => setExpanded(!expanded)}
+        className="p-3 flex items-center justify-between cursor-pointer hover:bg-[#161e31] transition-colors"
+      >
+        <div className="flex items-center space-x-2">
+          <Calculator className="w-3.5 h-3.5 text-amber-400" />
+          <span className="text-xs font-bold text-[#f1f5f9]">
+            🧮 拿房真实总成本 & 举牌红线测算器
+          </span>
+          {bidNum > 0 && totalCostWan > 0 && !expanded && (
+            <span className="text-[10px] text-amber-300 font-mono">
+              (成本¥{totalCostWan.toFixed(1)}万 · 上限¥{maxBidWan}万)
+            </span>
+          )}
+        </div>
+        <div className="flex items-center space-x-1 text-[#64748b]">
+          <span className="text-[10px]">{expanded ? '收起' : '展开测算'}</span>
+          {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="p-3.5 pt-1 border-t border-[#1e2638] space-y-3 text-xs">
+          <div className="grid grid-cols-2 gap-2.5">
+            <div>
+              <label className="text-[11px] text-[#94a3b8] block mb-1">拟出价/举牌价 (万元)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={bidPrice}
+                onChange={(e) => setBidPrice(e.target.value)}
+                placeholder="起拍价"
+                className="w-full bg-[#161e31] border border-[#1e2638] rounded px-2.5 py-1 text-xs text-[#f1f5f9] font-mono focus:border-amber-400/60 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] text-[#94a3b8] block mb-1">同小区二手去化价 (万元)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={marketPrice}
+                onChange={(e) => setMarketPrice(e.target.value)}
+                placeholder="参考评估/挂牌价"
+                className="w-full bg-[#161e31] border border-[#1e2638] rounded px-2.5 py-1 text-xs text-[#f1f5f9] font-mono focus:border-amber-400/60 focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="text-[11px] text-[#94a3b8] block mb-1">契税费率</label>
+              <select
+                value={deedRate}
+                onChange={(e) => setDeedRate(parseFloat(e.target.value))}
+                className="w-full bg-[#161e31] border border-[#1e2638] rounded px-2 py-1 text-xs text-[#cbd5e1] focus:border-amber-400/60 focus:outline-none"
+              >
+                <option value={1}>1.0% (首套/二套 ≤140㎡)</option>
+                <option value={1.5}>1.5% (首套 &gt;140㎡)</option>
+                <option value={2}>2.0% (二套 &gt;140㎡)</option>
+                <option value={3}>3.0% (三套及以上/商办)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[11px] text-[#94a3b8] block mb-1">目标净收益率</label>
+              <select
+                value={targetMargin}
+                onChange={(e) => setTargetMargin(parseFloat(e.target.value))}
+                className="w-full bg-[#161e31] border border-[#1e2638] rounded px-2 py-1 text-xs text-[#cbd5e1] focus:border-amber-400/60 focus:outline-none"
+              >
+                <option value={10}>10% 安全垫 (保本微利)</option>
+                <option value={15}>15% 目标收益 (稳健投资)</option>
+                <option value={20}>20% 激进收益 (高性价比)</option>
+                <option value={25}>25% 暴利安全垫</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[11px] text-[#94a3b8] block mb-1">物业/采暖欠费预估 (万)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={arrears}
+                onChange={(e) => setArrears(e.target.value)}
+                className="w-full bg-[#161e31] border border-[#1e2638] rounded px-2.5 py-1 text-xs text-[#cbd5e1] font-mono focus:border-amber-400/60 focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="text-[11px] text-[#94a3b8] block mb-1">清场安置备用金 (万)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={clearance}
+                onChange={(e) => setClearance(e.target.value)}
+                className="w-full bg-[#161e31] border border-[#1e2638] rounded px-2.5 py-1 text-xs text-[#cbd5e1] font-mono focus:border-amber-400/60 focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="p-2 rounded bg-[#161e31] border border-[#1e2638] flex items-center justify-between">
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeSellerTax}
+                onChange={(e) => setIncludeSellerTax(e.target.checked)}
+                className="rounded border-[#1e2638] text-amber-500 focus:ring-0 cursor-pointer"
+              />
+              <span className="text-xs text-[#cbd5e1] font-medium">
+                买受人全担税费 (转嫁上家增值税/个税)
+              </span>
+            </label>
+            {includeSellerTax && (
+              <div className="flex items-center space-x-1 text-[11px] text-rose-300">
+                <span>预估费率:</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={sellerRate}
+                  onChange={(e) => setSellerRate(parseFloat(e.target.value) || 0)}
+                  className="w-12 bg-[#121827] border border-rose-800/60 rounded px-1 text-center font-mono text-xs text-rose-300"
+                />
+                <span>%</span>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-[#161e31] rounded-lg p-3 border border-amber-500/30 space-y-2">
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <span className="text-[#94a3b8] block text-[11px]">拿房真实总成本</span>
+                <span className="text-base font-bold text-amber-400 font-mono">
+                  ¥{totalCostWan.toFixed(2)}万
+                </span>
+                {actualUnitPrice > 0 && (
+                  <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                    实得单价: ¥{actualUnitPrice.toLocaleString()}/㎡
+                  </div>
+                )}
+              </div>
+              <div>
+                <span className="text-[#94a3b8] block text-[11px]">预期投资毛利 / ROI</span>
+                <div className={`text-base font-bold font-mono ${grossProfitWan >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {grossProfitWan >= 0 ? `+¥${grossProfitWan.toFixed(2)}万` : `-¥${Math.abs(grossProfitWan).toFixed(2)}万`}
+                  <span className="text-xs ml-1 font-normal opacity-90">({roiPercent}%)</span>
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5">
+                  税费杂费占: ¥{(deedTaxWan + sellerTaxWan + arrearsNum + clearanceNum).toFixed(2)}万
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-[#1e2638] flex items-center justify-between">
+              <div>
+                <span className="text-[11px] text-slate-400">🛡️ {targetMargin}% 收益举牌上限红线: </span>
+                <span className="text-sm font-bold text-amber-300 font-mono ml-1">
+                  ¥{maxBidWan} 万元
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleSyncToNotes}
+                className="px-2 py-1 text-[11px] font-semibold rounded bg-[#182238] text-amber-300 border border-amber-500/40 hover:bg-[#1d2a45] transition-colors"
+                title="将当前投资红线结论快速追加到便签备忘中"
+              >
+                + 记入便签
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 📋 职业法拍 5 步尽调 Checklist
+const DD_CHECKLIST_TEMPLATE = [
+  { id: 'title', title: '1. 产调与司法查封排查', hint: '不动产登记中心调取产调证明，核实首封法院、查封轮次、是否有多次抵押及破产程序介入' },
+  { id: 'site', title: '2. 现场实地勘验与占用', hint: '现场上门核实是否有人居住、是否有老人/重病人员阻挠、水电表走动、门锁及内部结构完好度' },
+  { id: 'lease', title: '3. 租赁及居住权穿透', hint: '核查是否存在长租合同（买卖不破租赁）、租金是否在抵押前一次性付清、是否登记居住权' },
+  { id: 'tax', title: '4. 综合税费与历史欠费', hint: '核实原购房价/增值税原值发票，确认上家增值税/个税是否转嫁买受人；向物业核查欠费及滞纳金' },
+  { id: 'school', title: '5. 户口学区与协同交付', hint: '向派出所核查户口沉淀情况；向教育局核验学区学位占用周期；评估法院协助执行清场交付力度' },
+];
+
+function DueDiligenceChecklist({ notice, onAppendNotes }) {
+  const [expanded, setExpanded] = useState(false);
+  const [checkedMap, setCheckedMap] = useState({});
+
+  useEffect(() => {
+    if (notice?.id) {
+      try {
+        const saved = localStorage.getItem(`court_dd_checks_${notice.id}`);
+        setCheckedMap(saved ? JSON.parse(saved) : {});
+      } catch {
+        setCheckedMap({});
+      }
+    }
+  }, [notice?.id]);
+
+  const toggleItem = (id) => {
+    const next = { ...checkedMap, [id]: !checkedMap[id] };
+    setCheckedMap(next);
+    try {
+      localStorage.setItem(`court_dd_checks_${notice.id}`, JSON.stringify(next));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const doneCount = DD_CHECKLIST_TEMPLATE.filter(it => checkedMap[it.id]).length;
+
+  const handleSyncToNotes = () => {
+    const doneTitles = DD_CHECKLIST_TEMPLATE
+      .filter(it => checkedMap[it.id])
+      .map(it => it.title.slice(3, 7))
+      .join('/');
+    const noteContent = `[${doneCount === 5 ? '已尽调' : '待看样'}] 已排查${doneCount}/5项尽调清单(${doneTitles || '暂无'})`;
+    if (onAppendNotes) {
+      onAppendNotes(noteContent);
+    }
+  };
+
+  return (
+    <div className="bg-[#121827] rounded-lg border border-[#1e2638] overflow-hidden">
+      <div
+        onClick={() => setExpanded(!expanded)}
+        className="p-3 flex items-center justify-between cursor-pointer hover:bg-[#161e31] transition-colors"
+      >
+        <div className="flex items-center space-x-2">
+          <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
+          <span className="text-xs font-bold text-[#f1f5f9]">
+            📋 职业法拍 5 步尽调 Checklist
+          </span>
+          <span className={`text-[10px] px-1.5 py-0.2 rounded font-semibold ${
+            doneCount === 5
+              ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-700/60'
+              : 'bg-[#161e31] text-[#94a3b8] border border-[#1e2638]'
+          }`}>
+            {doneCount}/5 项已排查
+          </span>
+        </div>
+        <div className="flex items-center space-x-1 text-[#64748b]">
+          <span className="text-[10px]">{expanded ? '收起' : '展开清单'}</span>
+          {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="p-3.5 pt-1 border-t border-[#1e2638] space-y-2.5 text-xs">
+          <div className="space-y-2">
+            {DD_CHECKLIST_TEMPLATE.map((item) => {
+              const isChecked = !!checkedMap[item.id];
+              return (
+                <div
+                  key={item.id}
+                  onClick={() => toggleItem(item.id)}
+                  className={`p-2.5 rounded border cursor-pointer transition-colors ${
+                    isChecked
+                      ? 'bg-emerald-950/20 border-emerald-700/40 text-emerald-200'
+                      : 'bg-[#161e31] border-[#1e2638] text-[#cbd5e1] hover:bg-[#182238]'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => {}}
+                      className="rounded border-[#1e2638] text-emerald-500 focus:ring-0 cursor-pointer shrink-0"
+                    />
+                    <span className={`font-semibold text-xs ${isChecked ? 'text-emerald-300 line-through opacity-90' : 'text-[#f1f5f9]'}`}>
+                      {item.title}
+                    </span>
+                  </div>
+                  <p className="mt-1 pl-5 text-[11px] text-[#94a3b8] leading-relaxed">
+                    {item.hint}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="pt-2 border-t border-[#1e2638] flex items-center justify-between">
+            <span className="text-[11px] text-[#64748b]">
+              排查进度自动存盘，防丢抗重置
+            </span>
+            <button
+              type="button"
+              onClick={handleSyncToNotes}
+              className="px-2.5 py-1 text-[11px] font-semibold rounded bg-[#182238] text-emerald-300 border border-emerald-500/40 hover:bg-[#1d2a45] transition-colors"
+            >
+              同步排查结论至便签
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function NoticeDetailPane({ notice, onClose, onStarChange, onNotesUpdated, onSelectNotice }) {
   const [notes, setNotes] = useState('');
@@ -10,6 +360,13 @@ export default function NoticeDetailPane({ notice, onClose, onStarChange, onNote
   const [isStarred, setIsStarred] = useState(false);
   const [copied, setCopied] = useState(false);
   const [briefingCopied, setBriefingCopied] = useState(false);
+
+  const handleAppendNotes = (textToAppend) => {
+    let current = notes || '';
+    let updated = current ? `${current}\n${textToAppend}` : textToAppend;
+    setNotes(updated);
+    handleSaveNotes(updated);
+  };
 
   // 跨平台全流程关联与时间线
   const [relatedData, setRelatedData] = useState(null);
@@ -227,7 +584,7 @@ export default function NoticeDetailPane({ notice, onClose, onStarChange, onNote
         </div>
 
         {/* 法拍核心指标网格 (琥珀金互补色系统) */}
-        {(notice.starting_price != null || notice.eval_price != null) && (
+        {(notice.starting_price != null || notice.eval_price != null || notice.area_sqm != null) && (
           <div className="bg-[#161e31] rounded-lg p-3.5 border border-[#1e2638] grid grid-cols-2 gap-3">
             <div>
               <div className="text-[11px] text-[#94a3b8]">起拍价 (元)</div>
@@ -241,6 +598,24 @@ export default function NoticeDetailPane({ notice, onClose, onStarChange, onNote
                 {notice.eval_price ? `¥${Number(notice.eval_price).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}` : '--'}
               </div>
             </div>
+
+            {(notice.area_sqm != null || notice.unit_price != null) && (
+              <>
+                <div className="pt-2 border-t border-[#1e2638]">
+                  <div className="text-[11px] text-[#94a3b8]">建筑面积 (㎡)</div>
+                  <div className="text-sm font-semibold text-[#cbd5e1] tabular-nums mt-0.5 font-mono">
+                    {notice.area_sqm != null ? `${notice.area_sqm} ㎡` : '--'}
+                  </div>
+                </div>
+                <div className="pt-2 border-t border-[#1e2638]">
+                  <div className="text-[11px] text-[#94a3b8]">折合起拍单价</div>
+                  <div className="text-sm font-bold text-amber-300 tabular-nums mt-0.5 font-mono">
+                    {notice.unit_price != null ? `¥${notice.unit_price.toLocaleString('zh-CN')} / ㎡` : '--'}
+                  </div>
+                </div>
+              </>
+            )}
+
             {notice.discount_rate != null && (
               <div className="col-span-2 pt-2 border-t border-[#1e2638] flex items-center justify-between">
                 <span className="text-xs text-[#94a3b8]">折扣评估</span>
@@ -303,6 +678,12 @@ export default function NoticeDetailPane({ notice, onClose, onStarChange, onNote
             </div>
           </div>
         )}
+
+        {/* 🧮 拿房真实总成本 & 举牌红线测算器 */}
+        <InvestorRoiCalculator notice={notice} onAppendNotes={handleAppendNotes} />
+
+        {/* 📋 职业法拍 5 步尽调 Checklist */}
+        <DueDiligenceChecklist notice={notice} onAppendNotes={handleAppendNotes} />
 
         {/* 关键元数据列表 */}
         <div className="space-y-2 text-xs">

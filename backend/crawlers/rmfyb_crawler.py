@@ -46,7 +46,7 @@ def fetch_rmfygg_detail(uuid: str) -> dict:
 
 def fetch_rmfyb_static_epaper(target_date: Optional[datetime] = None) -> List[dict]:
     """
-    备用通道：抓取《人民法院报》静态数字报（http://rmfyb.chinacourt.org/paper/html/YYYY-MM/DD/node_2.htm 至 node_8.htm）
+    备用通道：抓取《人民法院报》静态数字报（http://rmfyb.chinacourt.org/paper/html/YYYY-MM/DD/node_2.htm 至 node_12.htm）
     当 rmfygg.court.gov.cn 主通道返回 0 条或请求异常时自动触发兜底
     """
     if target_date is None:
@@ -54,11 +54,11 @@ def fetch_rmfyb_static_epaper(target_date: Optional[datetime] = None) -> List[di
 
     results = []
     seen_urls = set()
-    dates_to_try = [target_date, target_date - timedelta(days=1), target_date - timedelta(days=2)]
+    dates_to_try = [target_date - timedelta(days=d) for d in range(5)]
 
     for dt in dates_to_try:
         found_date_articles = []
-        for node_idx in range(2, 9):  # node_2.htm 至 node_8.htm (法院公告版)
+        for node_idx in range(2, 13):  # node_2.htm 至 node_12.htm (覆盖《人民法院报》全部公告版面)
             node_url = dt.strftime(f"http://rmfyb.chinacourt.org/paper/html/%Y-%m/%d/node_{node_idx}.htm")
             try:
                 req = urllib.request.Request(node_url, headers={
@@ -147,15 +147,13 @@ async def fetch_rmfyb_real_notices() -> List[dict]:
             if any(k in page_title for k in ['访问受限', '安全检查', '系统维护', '403', '404', '502', '503']):
                 warning_reasons.append(f"人民法院公告网异常拦截: {page_title}")
 
-            search_modes = [
-                {"name": "河南省各级法院专场", "court_query": "河南"},
-                {"name": "郑州法院定向", "court_query": "郑州"},
-                {"name": "洛阳法院定向", "court_query": "洛阳"},
-                {"name": "南阳法院定向", "court_query": "南阳"},
-                {"name": "商丘法院定向", "court_query": "商丘"},
-                {"name": "新乡法院定向", "court_query": "新乡"},
-                {"name": "全国大盘实时公示", "court_query": ""}
+            henan_cities = [
+                "河南", "郑州", "洛阳", "南阳", "商丘", "新乡", "周口", "驻马店",
+                "信阳", "平顶山", "安阳", "开封", "焦作", "许昌", "濮阳", "漯河",
+                "三门峡", "鹤壁", "济源"
             ]
+            search_modes = [{"name": f"{c}法院定向" if c != "河南" else "河南省各级法院专场", "court_query": c} for c in henan_cities]
+            search_modes.append({"name": "全国大盘实时公示", "court_query": ""})
 
             seen_raw_ids = set()
 
@@ -169,8 +167,8 @@ async def fetch_rmfyb_real_notices() -> List[dict]:
                     else:
                         await page.fill("#courtVal", "")
 
-                    # 检索近3天至今日最新发布内容，确保全量捕获法院发布的各类开庭、送达与执行公告
-                    start_date_str = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+                    # 检索近10天至今日最新发布内容，确保全量捕获法院发布的各类开庭、送达与执行公告
+                    start_date_str = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
                     try:
                         start_input = await page.query_selector("#startVal, input[name='startDate']")
                         if start_input:
@@ -230,10 +228,10 @@ async def fetch_rmfyb_real_notices() -> List[dict]:
                             except Exception:
                                 pub_time = None
 
-                            # 时效门禁校验：严格过滤超出 3 天的历史旧公告
+                            # 时效门禁校验：放宽至 15 天内最新公告，避免刚刊登几天的有效公告被过滤
                             if pub_time is not None:
                                 days_diff = (datetime.now() - pub_time).total_seconds() / 86400.0
-                                if days_diff > 3.0:
+                                if days_diff > 15.0:
                                     continue
 
                             # 标题与内容结构化规范化：包含案号以明确区分同一法院/当事人的不同案件

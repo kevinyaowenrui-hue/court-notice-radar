@@ -46,17 +46,17 @@ def fetch_caa_detail(pid: int) -> dict:
     except Exception:
         return {}
 
-def fetch_caa_items(count: int = 30, filter_content: str = "") -> List[dict]:
+def fetch_caa_items(count: int = 30, filter_content: str = "", start: int = 0) -> List[dict]:
     """请求中拍平台信息公示接口，优先抓取在拍公示(publishStatus=2)与预告/最新公示"""
     results = []
     kw = quote(filter_content) if filter_content else ""
     urls = []
     if filter_content:
-        urls.append(f"https://paimai.caa123.org.cn/paimai-search/publicity/list?start=0&count={count}&filterContent={kw}&publishStatus=2")
-        urls.append(f"https://paimai.caa123.org.cn/paimai-search/publicity/list?start=0&count={count}&filterContent={kw}")
+        urls.append(f"https://paimai.caa123.org.cn/paimai-search/publicity/list?start={start}&count={count}&filterContent={kw}&publishStatus=2")
+        urls.append(f"https://paimai.caa123.org.cn/paimai-search/publicity/list?start={start}&count={count}&filterContent={kw}")
     else:
-        urls.append(f"https://paimai.caa123.org.cn/paimai-search/publicity/list?start=0&count={count}&publishStatus=2")
-        urls.append(f"https://paimai.caa123.org.cn/paimai-search/publicity/list?start=0&count={count}")
+        urls.append(f"https://paimai.caa123.org.cn/paimai-search/publicity/list?start={start}&count={count}&publishStatus=2")
+        urls.append(f"https://paimai.caa123.org.cn/paimai-search/publicity/list?start={start}&count={count}")
 
     seen_pids = set()
     for url in urls:
@@ -230,14 +230,14 @@ def fetch_caa_items(count: int = 30, filter_content: str = "") -> List[dict]:
 
     return results
 
-def fetch_caa_lots(province_code: str = "410000", count: int = 40, filter_name: str = "") -> List[dict]:
+def fetch_caa_lots(province_code: str = "410000", count: int = 40, filter_name: str = "", start: int = 0) -> List[dict]:
     """
     抓取中拍平台正在进行/即将开拍的真实拍卖标的 (paimai-web/lots)
     province_code=410000 为河南省官方行政代码，直接获取河南属地核心法拍与资产标的
     """
     results = []
     kw = quote(filter_name) if filter_name else ""
-    url = f"https://paimai.caa123.org.cn/paimai-web/lots?start=0&count={count}"
+    url = f"https://paimai.caa123.org.cn/paimai-web/lots?start={start}&count={count}"
     if province_code:
         url += f"&provinceCode={province_code}"
     if kw:
@@ -377,34 +377,58 @@ def fetch_caa_lots(province_code: str = "410000", count: int = 40, filter_name: 
     return results
 
 def fetch_caa_real_publicity() -> Tuple[List[dict], Optional[str]]:
-    """纯网络抓取中拍平台数据，不持有数据库会话"""
-    print("[caa_crawler] Starting CAA raw crawl...")
+    """纯网络抓取中拍平台数据，实施双通道（公告库 + 拍品库）全量采集与自动翻页"""
+    print("[caa_crawler] Starting CAA raw crawl (Channel A + Channel B)...")
     all_items = []
     seen_ids = set()
 
-    # 1. 优先抓取中拍平台河南官方专属实时在拍标的（provinceCode=410000）
-    henan_lots = fetch_caa_lots(province_code="410000", count=50)
-    for it in henan_lots:
-        if it["raw_id"] not in seen_ids:
-            seen_ids.add(it["raw_id"])
-            all_items.append(it)
+    # 通道 B: 新增中拍拍品库接口 paimai-web/lots 采集
+    # 覆盖河南属地及重点分类（全省大盘、房产、土地、工业厂房、股权债权、破产）
+    lot_categories = ["", "房产", "土地", "厂房", "工业", "股权", "债权", "破产"]
+    for cat in lot_categories:
+        for start in [0, 40]:
+            lots = fetch_caa_lots(province_code="410000", count=40, filter_name=cat, start=start)
+            new_cnt = 0
+            for it in lots:
+                if it["raw_id"] not in seen_ids:
+                    seen_ids.add(it["raw_id"])
+                    all_items.append(it)
+                    new_cnt += 1
+            if new_cnt == 0:
+                break
 
-    # 2. 定向抓取包含“河南”关键词的全国重大处置资产
-    nationwide_henan_lots = fetch_caa_lots(province_code="", count=30, filter_name="河南")
-    for it in nationwide_henan_lots:
-        if it["raw_id"] not in seen_ids:
-            seen_ids.add(it["raw_id"])
-            all_items.append(it)
-
-    # 3. 轮询河南及重点地市 filterContent 抓取信息公示（补充成交结果与资产处置公告）
-    filter_keywords = ["", "河南", "郑州", "洛阳", "南阳", "商丘", "开封", "新乡"]
-    for kw in filter_keywords:
-        publicity_items = fetch_caa_items(count=20, filter_content=kw)
-        for it in publicity_items:
+    # 定向抓取全国跨域涉豫拍卖标的
+    for start in [0, 30]:
+        nationwide = fetch_caa_lots(province_code="", count=30, filter_name="河南", start=start)
+        new_cnt = 0
+        for it in nationwide:
             if it["raw_id"] not in seen_ids:
                 seen_ids.add(it["raw_id"])
                 all_items.append(it)
+                new_cnt += 1
+        if new_cnt == 0:
+            break
 
+    # 通道 A: 公告搜索 publicity/list 支持多页翻页（start=0, 30, 60）与早停
+    # 搜索词涵盖河南全省 18 地市 + 重点业务词
+    publicity_keywords = [
+        "", "河南", "河南省", "人民法院", "破产", "农商行", "银行", "资产",
+        "郑州", "洛阳", "南阳", "新乡", "商丘", "周口", "驻马店", "信阳",
+        "平顶山", "安阳", "开封", "焦作", "许昌", "濮阳", "漯河", "三门峡", "鹤壁", "济源"
+    ]
+    for kw in publicity_keywords:
+        for start in [0, 30, 60]:
+            publicity_items = fetch_caa_items(count=30, filter_content=kw, start=start)
+            new_cnt = 0
+            for it in publicity_items:
+                if it["raw_id"] not in seen_ids:
+                    seen_ids.add(it["raw_id"])
+                    all_items.append(it)
+                    new_cnt += 1
+            if new_cnt == 0:
+                break
+
+    print(f"[caa_crawler] Total items extracted: {len(all_items)}")
     return all_items, None
 
 from backend.database import SessionLocal

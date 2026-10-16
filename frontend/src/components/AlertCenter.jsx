@@ -48,6 +48,25 @@ export default function AlertCenter({ stats, onAlertCountChange, refreshTrigger 
   // 列表滚动容器 Ref，确保翻页时正常平滑翻滚置顶
   const listContainerRef = useRef(null);
 
+  // 监听筛选条件切换，同步重置分页 page 为 1
+  const prevAlertFiltersRef = useRef({ timeRange, selectedPlatform, selectedModule, henanOnly, selectedCity, unreadOnly });
+  useEffect(() => {
+    const prev = prevAlertFiltersRef.current;
+    if (
+      prev.timeRange !== timeRange ||
+      prev.selectedPlatform !== selectedPlatform ||
+      prev.selectedModule !== selectedModule ||
+      prev.selectedCity !== selectedCity ||
+      prev.henanOnly !== henanOnly ||
+      prev.unreadOnly !== unreadOnly
+    ) {
+      prevAlertFiltersRef.current = { timeRange, selectedPlatform, selectedModule, henanOnly, selectedCity, unreadOnly };
+      if (page !== 1) {
+        setPage(1);
+      }
+    }
+  }, [timeRange, selectedPlatform, selectedModule, henanOnly, selectedCity, unreadOnly, page]);
+
   const loadAlerts = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
@@ -519,29 +538,29 @@ export default function AlertCenter({ stats, onAlertCountChange, refreshTrigger 
           {!henanOnly && (
             <span className="px-1.5 py-0.2 rounded bg-[#161e31] text-[#cbd5e1] border border-[#1e2638] flex items-center space-x-1 text-[11px]">
               <span>全国大盘</span>
-              <button onClick={() => setHenanOnly(true)}><X className="w-3 h-3 hover:text-rose-400" /></button>
+              <button onClick={() => { setHenanOnly(true); setPage(1); }}><X className="w-3 h-3 hover:text-rose-400" /></button>
             </span>
           )}
           {unreadOnly && (
             <span className="px-1.5 py-0.2 rounded bg-rose-950/40 text-rose-300 border border-rose-800/40 flex items-center space-x-1 text-[11px]">
               <span>仅看未读</span>
-              <button onClick={() => setUnreadOnly(false)}><X className="w-3 h-3 hover:text-rose-400" /></button>
+              <button onClick={() => { setUnreadOnly(false); setPage(1); }}><X className="w-3 h-3 hover:text-rose-400" /></button>
             </span>
           )}
           {selectedPlatform && (
             <span className="px-1.5 py-0.2 rounded bg-[#182238] text-amber-300 border border-amber-500/30 flex items-center space-x-1 text-[11px]">
               <span>渠道: {PLATFORMS.find(p => p.id === selectedPlatform)?.label}</span>
-              <button onClick={() => setSelectedPlatform('')}><X className="w-3 h-3 hover:text-rose-400" /></button>
+              <button onClick={() => { setSelectedPlatform(''); setPage(1); }}><X className="w-3 h-3 hover:text-rose-400" /></button>
             </span>
           )}
           {selectedCity && (
             <span className="px-1.5 py-0.2 rounded bg-amber-950/40 text-amber-300 border border-amber-800/40 flex items-center space-x-1 text-[11px]">
               <span>地市: {selectedCity}</span>
-              <button onClick={() => setSelectedCity('')}><X className="w-3 h-3 hover:text-rose-400" /></button>
+              <button onClick={() => { setSelectedCity(''); setPage(1); }}><X className="w-3 h-3 hover:text-rose-400" /></button>
             </span>
           )}
           <button 
-            onClick={() => { setSelectedPlatform(''); setSelectedCity(''); setUnreadOnly(false); setHenanOnly(true); }}
+            onClick={() => { setSelectedPlatform(''); setSelectedCity(''); setUnreadOnly(false); setHenanOnly(true); setPage(1); }}
             className="text-[11px] text-[#60a5fa] hover:underline ml-2"
           >
             重置全部

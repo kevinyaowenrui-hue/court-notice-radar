@@ -216,8 +216,9 @@ def clean_database(db_path: str = None):
             except Exception:
                 pass
 
-        # 8. 提前清理旧联合唯一索引，避免步骤 A 归并标的转移预警时触发约束冲突
+        # 8. 提前清理旧唯一索引，避免步骤 A 归并标的转移预警时触发约束冲突
         cur.execute("DROP INDEX IF EXISTS uq_alert_rule_notice;")
+        cur.execute("DROP INDEX IF EXISTS uq_alert_notice_id;")
 
         # 步骤 A（归并重复标的）：在 court_notices 表中按 (platform, TRIM(title), COALESCE(auction_stage, '')) 分组
         # 若 COUNT(*) > 1，保留 MIN(id)（若任意一条 is_starred=1 则保留星标），将关联的 alert_events.notice_id 指向保留的 id 并删除多余重复标的
@@ -320,6 +321,13 @@ def clean_database(db_path: str = None):
         cur.execute("DROP INDEX IF EXISTS uq_alert_rule_notice;")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_notice_id ON alert_events (notice_id);")
         print("[Clean] 步骤 C 完成: 重建唯一索引 uq_alert_notice_id (notice_id)")
+
+        # 11. 步骤 D：补充高频查询与去重索引，保障万级数据毫秒级响应
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_notices_platform_pubtime ON court_notices(platform, publish_time);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_notices_platform_rawid ON court_notices(platform, raw_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_notices_henan_city ON court_notices(is_henan, henan_city);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_notice_id ON alert_events(notice_id);")
+        print("[Clean] 步骤 D 完成: 创建高频查询与去重索引 (platform_pubtime, platform_rawid, henan_city, notice_id)")
 
         conn.commit()
 

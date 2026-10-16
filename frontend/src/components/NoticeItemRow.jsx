@@ -111,7 +111,7 @@ export default function NoticeItemRow({ item, isSelected, isUnread, ruleName, on
             </span>
           )}
 
-          {item.asset_category === '房产' && (
+          {(item.asset_category === '房产' || item.asset_category === '住宅/商业房产') && (
             <span className="text-[10px] font-semibold px-1 py-0.2 rounded bg-indigo-950/40 text-indigo-300 border border-indigo-800/40 shrink-0">
               房产
             </span>
@@ -208,6 +208,13 @@ export default function NoticeItemRow({ item, isSelected, isUnread, ruleName, on
                 ? `${(item.starting_price / 10000).toFixed(1)}万` 
                 : item.starting_price.toLocaleString('zh-CN')}
             </div>
+            {(item.area_sqm != null || item.unit_price != null) && (
+              <div className="text-[10px] text-slate-400 tabular-nums font-mono">
+                {item.area_sqm != null ? `${item.area_sqm}㎡` : ''}
+                {item.area_sqm != null && item.unit_price != null ? ' · ' : ''}
+                {item.unit_price != null ? `¥${item.unit_price.toLocaleString('zh-CN')}/㎡` : ''}
+              </div>
+            )}
             {item.discount_rate != null ? (
               <span className={`inline-block text-[10px] font-bold px-1.5 py-0.2 rounded mt-0.5 ${
                 (item.discount_rate <= 7 || (item.discount_rate > 10 && item.discount_rate <= 70))
@@ -217,7 +224,7 @@ export default function NoticeItemRow({ item, isSelected, isUnread, ruleName, on
                 {(item.discount_rate <= 7 || (item.discount_rate > 10 && item.discount_rate <= 70)) ? '🔥 ' : ''}{item.discount_rate}折
               </span>
             ) : (
-              <div className="text-[10px] text-[#64748b]">起拍价</div>
+              (!item.area_sqm && !item.unit_price) && <div className="text-[10px] text-[#64748b]">起拍价</div>
             )}
           </div>
         ) : null}

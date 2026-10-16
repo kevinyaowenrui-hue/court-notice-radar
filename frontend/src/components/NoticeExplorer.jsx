@@ -66,6 +66,25 @@ export default function NoticeExplorer({ externalSearchQuery = '', onStarToggled
   // 列表滚动容器 Ref，确保翻页时正常平滑翻滚置顶
   const listContainerRef = useRef(null);
 
+  // 监听筛选条件切换，同步重置分页 page 为 1
+  const prevFiltersRef = useRef({ timeRange, platform, selectedModule, selectedCity, assetCategory, henanOnly });
+  useEffect(() => {
+    const prev = prevFiltersRef.current;
+    if (
+      prev.timeRange !== timeRange ||
+      prev.platform !== platform ||
+      prev.selectedModule !== selectedModule ||
+      prev.selectedCity !== selectedCity ||
+      prev.assetCategory !== assetCategory ||
+      prev.henanOnly !== henanOnly
+    ) {
+      prevFiltersRef.current = { timeRange, platform, selectedModule, selectedCity, assetCategory, henanOnly };
+      if (page !== 1) {
+        setPage(1);
+      }
+    }
+  }, [timeRange, platform, selectedModule, selectedCity, assetCategory, henanOnly, page]);
+
   useEffect(() => {
     if (externalSearchQuery !== undefined) {
       setSearchQuery(externalSearchQuery);
@@ -423,6 +442,7 @@ export default function NoticeExplorer({ externalSearchQuery = '', onStarToggled
               className="bg-transparent text-[#cbd5e1] text-xs focus:outline-none cursor-pointer"
             >
               <option value="publish_time_desc" className="bg-[#111726]">最新发布时间</option>
+              <option value="bidding_start_asc" className="bg-[#111726]">⏰ 即将开拍/截标</option>
               <option value="discount_asc" className="bg-[#111726]">🔥 捡漏折扣 (低到高)</option>
               <option value="price_asc" className="bg-[#111726]">起拍价格 (低到高)</option>
               <option value="price_desc" className="bg-[#111726]">起拍价格 (高到低)</option>
@@ -661,35 +681,35 @@ export default function NoticeExplorer({ externalSearchQuery = '', onStarToggled
           {searchQuery && (
             <span className="px-1.5 py-0.2 rounded bg-[#182238] text-amber-300 border border-amber-500/30 flex items-center space-x-1 text-[11px]">
               <span>关键词: "{searchQuery}"</span>
-              <button onClick={() => setSearchQuery('')}><X className="w-3 h-3 hover:text-rose-400" /></button>
+              <button onClick={() => { setSearchQuery(''); setPage(1); }}><X className="w-3 h-3 hover:text-rose-400" /></button>
             </span>
           )}
           {!henanOnly && (
             <span className="px-1.5 py-0.2 rounded bg-[#161e31] text-[#cbd5e1] border border-[#1e2638] flex items-center space-x-1 text-[11px]">
               <span>全国全域</span>
-              <button onClick={() => setHenanOnly(true)}><X className="w-3 h-3 hover:text-rose-400" /></button>
+              <button onClick={() => { setHenanOnly(true); setPage(1); }}><X className="w-3 h-3 hover:text-rose-400" /></button>
             </span>
           )}
           {platform && (
             <span className="px-1.5 py-0.2 rounded bg-[#182238] text-amber-300 border border-amber-500/30 flex items-center space-x-1 text-[11px]">
               <span>平台: {PLATFORMS.find(p => p.value === platform)?.label}</span>
-              <button onClick={() => setPlatform('')}><X className="w-3 h-3 hover:text-rose-400" /></button>
+              <button onClick={() => { setPlatform(''); setPage(1); }}><X className="w-3 h-3 hover:text-rose-400" /></button>
             </span>
           )}
           {selectedCity && (
             <span className="px-1.5 py-0.2 rounded bg-amber-950/40 text-amber-300 border border-amber-800/40 flex items-center space-x-1 text-[11px]">
               <span>地市: {selectedCity}</span>
-              <button onClick={() => setSelectedCity('')}><X className="w-3 h-3 hover:text-rose-400" /></button>
+              <button onClick={() => { setSelectedCity(''); setPage(1); }}><X className="w-3 h-3 hover:text-rose-400" /></button>
             </span>
           )}
           {court && (
             <span className="px-1.5 py-0.2 rounded bg-[#161e31] text-[#cbd5e1] border border-[#1e2638] flex items-center space-x-1 text-[11px]">
               <span>法院: {court}</span>
-              <button onClick={() => setCourt('')}><X className="w-3 h-3 hover:text-rose-400" /></button>
+              <button onClick={() => { setCourt(''); setPage(1); }}><X className="w-3 h-3 hover:text-rose-400" /></button>
             </span>
           )}
           <button 
-            onClick={() => { setPlatform(''); setSelectedCity(''); setCourt(''); setPriceMin(''); setPriceMax(''); setHenanOnly(true); setSearchQuery(''); }}
+            onClick={() => { setPlatform(''); setSelectedCity(''); setCourt(''); setPriceMin(''); setPriceMax(''); setHenanOnly(true); setSearchQuery(''); setPage(1); }}
             className="text-[11px] text-[#60a5fa] hover:underline ml-2"
           >
             重置全部

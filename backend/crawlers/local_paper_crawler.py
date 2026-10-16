@@ -92,18 +92,43 @@ def fetch_paper_html(url: str, timeout: int = 8):
     except Exception:
         return url, ""
 
+def is_candidate_notice_link(ename: str, title: str) -> bool:
+    """阶段一：版面与链接初筛（宽进）"""
+    if bool(re.search(r'招聘|市集|反恐|校园|大赛|普法|学法|交房|交付公告|友情链接', title)):
+        return False
+    # 所属版面包含重点业务
+    if bool(re.search(r'公告|广告|专版|法治|法制|分类|声明|政法', ename)):
+        return True
+    # 链接标题包含业务关键词
+    if bool(re.search(r'公告|法院|拍卖|变卖|债权|催收|破产|清算|重整|送达|传票|裁定|执行|公证|挂牌|转让|招租|遗失|催告', title)):
+        return True
+    return False
+
+def is_valid_judicial_notice(title: str, content_text: str) -> bool:
+    """阶段二：详情页正文终审（严出）"""
+    check_text = f"{title}\n{content_text}" if content_text else title
+    has_subject = bool(re.search(r'人民法院|中级法院|基层法院|法庭|金融资产|资产管理|银行|农商行|信用社|信用联社|破产管理人|拍卖行|拍卖有限|产权交易|清算组|公证处|仲裁委|执行局', check_text))
+    has_action = bool(re.search(r'拍卖|变卖|在拍|起拍|拍租|竞买|竞价|财产处置|资产处置|涉案资产|送达|传票|限消|失信|执行裁定|应诉通知|借款合同纠纷|民事判决|民事裁定|公告送达|破产|清算|重整|债权申报|债权人会议|注销公告|减资公告|债权转让|债权催收|联合催收|不良资产|追偿|出让公告|土地出让|采矿权|挂牌出让|产权转让|遗失声明|作废声明|权属证明|催告|起诉状', check_text))
+    if not (has_subject and has_action):
+        return False
+    if is_promotional_content(check_text):
+        return False
+    if is_vehicle_or_equipment_item(title, content_text):
+        return False
+    return True
+
 def scan_single_paper(seed: PaperSeed) -> List[dict]:
-    """扫描单家地方报社官网与数字报专版，全版面深度提取真实刊登的所有相关公告"""
+    """扫描单家地方报社官网与数字报专版，实施两阶段漏斗过滤与 7 天可用报期回溯"""
     results = []
     try:
         real_url, seed_html = fetch_paper_html(seed.epaper_url, timeout=8)
         if not seed_html:
             return results
 
-        # 1. 深度穿透数字报期刊入口（处理 meta refresh / JS 跳转 / paperindex.htm 自动跳转到当期版面）
+        # 1. 穿透数字报期刊入口（处理 meta refresh / JS 跳转 / paperindex.htm）
         current_issue_url = real_url
         refresh_m = re.search(r'content=["\']0;\s*url=([^"\']+)["\']', seed_html, re.I)
-        js_m = re.search(r'location\.href\s*=\s*["\']([^"\']+)["\']', seed_html, re.I)
+        js_m = re.search(r'(?:window\.)?location(?:\.href)?\s*=\s*["\']([^"\']+)["\']', seed_html, re.I)
         if refresh_m:
             current_issue_url = urljoin(real_url, refresh_m.group(1).split('?')[0])
         elif js_m:
@@ -113,88 +138,125 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
 
         if current_issue_url != real_url:
             current_issue_url, issue_html = fetch_paper_html(current_issue_url, timeout=8)
-            # 检查二次跳转 (如 paperindex.htm 跳转到 html/node_1.htm)
             refresh_m2 = re.search(r'content=["\']0;\s*url=([^"\']+)["\']', issue_html, re.I)
+            js_m2 = re.search(r'(?:window\.)?location(?:\.href)?\s*=\s*["\']([^"\']+)["\']', issue_html, re.I)
             if refresh_m2:
                 current_issue_url, seed_html = fetch_paper_html(urljoin(current_issue_url, refresh_m2.group(1)), timeout=8)
+            elif js_m2:
+                current_issue_url, seed_html = fetch_paper_html(urljoin(current_issue_url, js_m2.group(1)), timeout=8)
             elif issue_html:
                 seed_html = issue_html
 
-        # 2. 全面提取版面列表 (涵盖 node_*.htm / Page_*.html / layout 等各类数字报系统架构)
-        node_matches = re.findall(r'<a[^>]*href=["\']?([^"\'\s>]*(?:node_|page_|layout|szb)[^"\'\s>]*)["\']?[^>]*>(.*?)</a>', seed_html, re.I | re.S)
-        editions = []
-        seen_nodes = set()
-        for href, title in node_matches:
-            clean_t = re.sub(r'<[^>]+>', '', title).strip()
-            full_nurl = urljoin(current_issue_url, href)
-            if full_nurl not in seen_nodes and clean_t:
-                seen_nodes.add(full_nurl)
-                editions.append((clean_t, full_nurl))
+        # 2. 收集最近 3~5 期有效报刊页面（支持自动向前回溯 7 天）
+        issues_to_scan = []
+        node_matches = re.findall(r'<a[^>]*href=["\']?([^"\'\s>]*(?:node_|page_|layout|szb|\d{1,2}/default\.htm|\.\./\d{1,2}/default\.htm)[^"\'\s>]*)["\']?[^>]*>(.*?)</a>', seed_html, re.I | re.S)
+        if node_matches or re.search(r'\d{1,2}/default\.htm', current_issue_url):
+            issues_to_scan.append((current_issue_url, seed_html))
 
-        # 新增今日/昨日日期路径主动探测兜底：当从 seed.epaper_url 首页未提取到 editions 版面列表时自动探测
-        if not editions:
-            template_paths = [
-                "html/%Y-%m/%d/node_1.htm",
-                "html/%Y-%m/%d/node_01.htm",
-                "pc/layout/%Y%m/%d/node_01.html",
-                "pc/layout/%Y%m/%d/node_1.html",
-                "szb/%Y%m%d/html/index.htm",
-                "epaper/%Y-%m/%d/node_01.htm"
-            ]
-            base_probe_url = seed.epaper_url.rstrip("/") + "/"
-            for offset in [0, 1]:
-                dt = datetime.now() - timedelta(days=offset)
-                found_probe = False
+        # 提取当前 issue_url 中的日期特征（如 2026-10/15 或 2026/10/16 或 20261015）
+        date_pattern_m = re.search(r'(\d{4})([-/])(\d{1,2})\2(\d{1,2})', current_issue_url)
+        date_compact_m = re.search(r'(\d{4})(\d{2})(\d{2})', current_issue_url)
+
+        template_paths = [
+            "html/%Y-%m/%d/node_1.htm",
+            "html/%Y-%m/%d/node_01.htm",
+            "pc/layout/%Y%m/%d/node_01.html",
+            "pc/layout/%Y%m/%d/node_1.html",
+            "szb/%Y%m%d/html/index.htm",
+            "epaper/%Y-%m/%d/node_01.htm"
+        ]
+        base_probe_url = seed.epaper_url.rstrip("/") + "/"
+
+        # 若当天（today）未提取到版面或为空，自动向前回溯 1~7 天可用报期（捕获最近 3~5 期有效出报）
+        # 若当天已有版面，则仅快速抓取前 1~2 期以兼顾速度与全面性
+        max_issues = 3
+        backtrack_days = 7 if not issues_to_scan else 2
+        for offset in range(1, backtrack_days + 1):
+            if len(issues_to_scan) >= max_issues:
+                break
+            dt = datetime.now() - timedelta(days=offset)
+            probe_url = None
+            if date_pattern_m:
+                sep = date_pattern_m.group(2)
+                old_date_str = date_pattern_m.group(0)
+                new_date_str = dt.strftime(f"%Y{sep}%m{sep}%d")
+                probe_url = current_issue_url.replace(old_date_str, new_date_str)
+            elif date_compact_m:
+                old_compact = date_compact_m.group(0)
+                new_compact = dt.strftime("%Y%m%d")
+                probe_url = current_issue_url.replace(old_compact, new_compact)
+
+            found_issue = False
+            if probe_url:
+                p_url, p_html = fetch_paper_html(probe_url, timeout=4)
+                if p_html and len(p_html) > 400:
+                    p_nodes = re.findall(r'<a[^>]*href=["\']?([^"\'\s>]*(?:node_|page_|layout|szb|\d{1,2}/default\.htm|\.\./\d{1,2}/default\.htm)[^"\'\s>]*)["\']?[^>]*>(.*?)</a>', p_html, re.I | re.S)
+                    if p_nodes or re.search(r'\d{1,2}/default\.htm', p_url):
+                        issues_to_scan.append((p_url, p_html))
+                        found_issue = True
+
+            # 仅当 issues_to_scan 仍为空时，才尝试探测通用模板路径
+            if not found_issue and not issues_to_scan:
                 for tpl in template_paths:
-                    probe_rel = dt.strftime(tpl)
-                    probe_url = urljoin(base_probe_url, probe_rel)
-                    _, p_html = fetch_paper_html(probe_url, timeout=5)
+                    tpl_url = urljoin(base_probe_url, dt.strftime(tpl))
+                    p_url, p_html = fetch_paper_html(tpl_url, timeout=3)
                     if p_html and len(p_html) > 400:
-                        p_matches = re.findall(r'<a[^>]*href=["\']?([^"\'\s>]*(?:node_|page_|layout|szb)[^"\'\s>]*)["\']?[^>]*>(.*?)</a>', p_html, re.I | re.S)
-                        if p_matches:
-                            current_issue_url = probe_url
-                            seed_html = p_html
-                            for href, p_title in p_matches:
-                                clean_t = re.sub(r'<[^>]+>', '', p_title).strip()
-                                full_nurl = urljoin(current_issue_url, href)
-                                if full_nurl not in seen_nodes and clean_t:
-                                    seen_nodes.add(full_nurl)
-                                    editions.append((clean_t, full_nurl))
-                            found_probe = True
+                        p_nodes = re.findall(r'<a[^>]*href=["\']?([^"\'\s>]*(?:node_|page_|layout|szb|\d{1,2}/default\.htm|\.\./\d{1,2}/default\.htm)[^"\'\s>]*)["\']?[^>]*>(.*?)</a>', p_html, re.I | re.S)
+                        if p_nodes:
+                            issues_to_scan.append((p_url, p_html))
                             break
-                if found_probe:
-                    break
 
-        # 收集待筛选的文章列表：[(版面名, 文章标题, 文章完整URL)]
+        # 3. 阶段一：列表初筛（宽进）
         candidate_articles = []
         seen_art_urls = set()
 
         def add_candidate(ename, atitle, aurl):
             clean_t = re.sub(r'<[^>]+>', '', atitle).strip()
             clean_t = re.sub(r'\s+', ' ', clean_t)
-            # 放宽标题限制为 2~150 字，允许抓取《公告》《声明》《法院公告》《拍卖公告》《送达公告》《破产公告》等
             if 2 <= len(clean_t) <= 150 and aurl not in seen_art_urls:
-                seen_art_urls.add(aurl)
-                candidate_articles.append((ename, clean_t, aurl))
+                if is_candidate_notice_link(ename, clean_t):
+                    seen_art_urls.add(aurl)
+                    candidate_articles.append((ename, clean_t, aurl))
 
-        if editions:
-            # 优先扫描包含公告、法治、政法、要闻、综合、经济、社会的版面，最大扫描前 16 个版面（彻底避免遗漏后置公告版）
+        for issue_url, issue_html in issues_to_scan:
+            node_matches = re.findall(r'<a[^>]*href=["\']?([^"\'\s>]*(?:node_|page_|layout|szb|\d{1,2}/default\.htm|\.\./\d{1,2}/default\.htm)[^"\'\s>]*)["\']?[^>]*>(.*?)</a>', issue_html, re.I | re.S)
+            editions = []
+            seen_nodes = set()
+            for href, title in node_matches:
+                clean_t = re.sub(r'<[^>]+>', '', title).strip()
+                full_nurl = urljoin(issue_url, href)
+                if full_nurl not in seen_nodes and clean_t:
+                    seen_nodes.add(full_nurl)
+                    editions.append((clean_t, full_nurl))
+
+            # 兼容 Uniflows 版面轮询 (如 ../01/default.htm ~ ../08/default.htm)
+            if len(editions) <= 1 and re.search(r'\d{1,2}/default\.htm', issue_url):
+                base_u = issue_url.rsplit('/', 2)[0] + '/'
+                for p_num in range(1, 13):
+                    editions.append((f"第{p_num:02d}版", f"{base_u}{p_num:02d}/default.htm"))
+
             sorted_editions = sorted(
                 editions,
-                key=lambda x: any(k in x[0] for k in ['公告', '法', '专版', '声明', '政法', '要闻', '综合', '社会', '经济']),
+                key=lambda x: any(k in x[0] for k in ['公告', '法', '专版', '声明', '政法', '要闻', '综合', '社会', '经济', '分类']),
                 reverse=True
             )
+
             for ename, eurl in sorted_editions[:16]:
                 _, ehtml = fetch_paper_html(eurl, timeout=5)
                 if not ehtml:
                     continue
 
-                # 模式 A: 鲁棒提取 <area ...> 热区切片（无论 href 与 title 谁先谁后）
+                # 模式 A: 提取 <area ...> 热区（支持 title, alt, 以及 onMouseOver mapAreaAction）
                 for area_tag in re.findall(r'<area\s+[^>]*>', ehtml, re.I):
                     href_m = re.search(r'href=["\']([^"\']+)["\']', area_tag, re.I)
-                    title_m = re.search(r'title=["\']([^"\']+)["\']', area_tag, re.I)
-                    if href_m and title_m:
-                        add_candidate(ename, title_m.group(1), urljoin(eurl, href_m.group(1)))
+                    title_m = re.search(r'(?:title|alt)=["\']([^"\']+)["\']', area_tag, re.I)
+                    cand_t = title_m.group(1).strip() if (title_m and title_m.group(1).strip()) else ""
+                    if not cand_t:
+                        map_m = re.search(r'mapAreaAction\([^,]+,[^,]+,[^,]+,[^,]+,[\'"]([^\'"]+)[\'"]', area_tag, re.I)
+                        if map_m:
+                            cand_t = map_m.group(1).strip()
+                    if href_m and len(cand_t) >= 2:
+                        add_candidate(ename, cand_t, urljoin(eurl, href_m.group(1)))
 
                 # 模式 B: 提取 <a ...> 列表文字与超链接
                 for a_tag in re.findall(r'<a\s+[^>]*>.*?</a>', ehtml, re.I | re.S):
@@ -204,31 +266,17 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
                     cand_title = title_m.group(1).strip() if (title_m and len(title_m.group(1).strip()) >= 2) else inner_text
                     if href_m and len(cand_title) >= 2:
                         add_candidate(ename, cand_title, urljoin(eurl, href_m.group(1)))
-        else:
-            # 兼容普通新闻门户或单页版面：解析全页超链接
-            links = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', seed_html, re.I | re.S)
-            for href, text in links:
-                clean_text = re.sub(r'<[^>]+>', '', text).strip()
-                if len(clean_text) >= 2:
-                    add_candidate("数字报刊", clean_text, urljoin(current_issue_url, href))
 
-        # 3. 严格匹配法治、司法、拍卖、债权及法定公告（双因子主体+动作强校验，彻底剔除招聘、市集、外链等无关内容）
+        # 4. 阶段二：正文终审（严出）与要素深度抽取
         seed_domain = urlparse(seed.epaper_url).netloc
 
         for ename, title, raw_art_url in candidate_articles:
-            # 域名同源校验：彻底过滤友情链接与外部广告链接
             art_domain = urlparse(raw_art_url).netloc
             if seed_domain and art_domain and seed_domain != art_domain:
                 continue
 
-            # 清理 URL 中的 HTML 实体转义符（如 &amp;）
             art_url = html.unescape(raw_art_url)
 
-            # 初步排除明显的反恐/招聘/生活宣传类标题
-            if bool(re.search(r'招聘|市集|反恐|大赛|校园|学法|普法|公积金|选调|政法委|交房|交付公告|友情链接', title)):
-                continue
-
-            # 深度穿透：请求详情页正文（前 2000 字），以支持正文级主体+动作双因子研判与关键要素抽取
             body_text = ""
             try:
                 _, art_html = fetch_paper_html(art_url, timeout=5)
@@ -243,23 +291,16 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
 
             check_text = f"{title}\n{body_text}" if body_text else title
 
-            # 正文/标题二次强校验：必须同时具备司法/处置主体词与业务动作词
-            has_subject = bool(re.search(r'人民法院|中级法院|基层法院|法庭|金融资产|资产管理|银行|农商行|破产管理人|拍卖行|产权交易|清算组', check_text))
-            has_action = bool(re.search(r'拍卖|变卖|送达|传票|破产|清算|重整|债权转让|催收|执行裁定|起诉状', check_text))
-
-            if not (has_subject and has_action):
-                continue
-            if is_promotional_content(check_text):
-                continue
-            if is_vehicle_or_equipment_item(title, body_text):
+            # 正文终审校验
+            if not is_valid_judicial_notice(title, body_text):
                 continue
 
-            # 从正文/标题智能提取真实法院或债权处置机构；未提取到时标记为报纸公告版，严禁伪造“XX地方人民法院”
+            # 从正文/标题智能提取真实法院或处置机构
             court_m = re.search(r'([^\s，。、（]{2,15}(?:人民法院|中级法院|基层法院|法庭|金融资产管理公司|破产管理人|拍卖行|产权交易中心))', check_text)
             extracted_court = court_m.group(1) if court_m else ""
             court_name = extracted_court or f"《{seed.paper_name}》公告版"
 
-            # 若原标题少于 6 个字（如仅写《法院公告》《声明》），用提取到的法院名或正文首句补全标题，并将完整正文存入 content_text
+            # 若原标题少于 6 个字，用法院名或正文首句补全标题
             if len(title) < 6:
                 first_sent = re.split(r'[。！!;\n]', body_text.strip())[0].strip() if body_text else ""
                 if extracted_court:
@@ -272,10 +313,7 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
                 else:
                     title = f"《{seed.paper_name}》{title}"
 
-            # 严格案号抽取（正文联合检索）
             case_number = extract_judicial_case_number(check_text) or ""
-
-            # 智能提取真实的起拍价与评估价
             starting_price, eval_price = extract_starting_and_eval_price(title, body_text or title)
             if starting_price is not None:
                 starting_price = round(starting_price, 2)
@@ -289,7 +327,7 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
                 f"【公告正文摘录】\n{body_text[:1200] if body_text else title}"
             )
 
-            # 河南 18 地市精确映射，严禁出现 henan_city="河南"，严禁将带“日报/晚报”的外省报纸误判为河南属地
+            # 河南 18 地市精确映射
             if "河南" in (seed.province or "") or "河南" in (seed.city or "") or seed.paper_name in HENAN_PAPER_CITY_MAP:
                 is_henan = True
                 mapped_city = HENAN_PAPER_CITY_MAP.get(seed.paper_name)
@@ -314,7 +352,6 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
                 if is_henan:
                     henan_tag = f"全国地方报跨域涉豫刊登 (《{seed.paper_name}》刊登涉{henan_city}公告)"
 
-            # 细分公告类型
             if any(k in title for k in ['拍卖', '变卖', '拍租', '竞买', '变价']):
                 notice_type = "报刊司法拍卖"
             elif any(k in title for k in ['债权', '不良资产', '资产包', '催收']):
@@ -344,13 +381,11 @@ def scan_single_paper(seed: PaperSeed) -> List[dict]:
             else:
                 paper_date = datetime.now()
 
-            # 时效门禁校验：放宽至 15 天以完整覆盖最近半个月报纸公告
             days_diff = (datetime.now() - paper_date).total_seconds() / 86400.0
             if days_diff > 15.0:
                 continue
 
-            # 使用补全后的 title 生成唯一 raw_id
-            raw_id = f"paper_{seed.id}_{stable_hash(title)}"
+            raw_id = f"paper_{seed.id}_{stable_hash(title + str(paper_date.date()))}"
 
             results.append({
                 "platform": "local_paper",

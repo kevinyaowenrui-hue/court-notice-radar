@@ -5,7 +5,7 @@
 import json
 import time
 from datetime import datetime
-from backend.database import engine, SessionLocal, Base
+from backend.database import engine, SessionLocal, Base, create_db_indexes
 from backend.models import CourtNotice, MonitorRule, AlertEvent, PaperSeed, TaskLog
 from backend.engine.rule_matcher import match_new_notices
 from backend.crawlers.seed_53bk import sync_53bk_seeds
@@ -18,6 +18,7 @@ def init_database_and_seeds():
     """初始化建表并填装初始数据"""
     print("[Init] Creating tables if not exist...")
     Base.metadata.create_all(bind=engine)
+    create_db_indexes(engine)
     db = SessionLocal()
 
     try:

@@ -26,7 +26,7 @@ from backend.engine.scheduler import start_scheduler, run_crawler_pipeline, trig
 from backend.engine.rule_matcher import check_match, match_new_notices
 from backend.engine.webhook import get_webhook_config, save_webhook_config, test_webhook
 from backend.crawlers.seed_53bk import sync_53bk_seeds
-from backend.utils import extract_risk_tags
+from backend.utils import extract_risk_tags, extract_area_and_unit_price
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -114,7 +114,7 @@ def sanitize_csv_cell(val):
 class RuleCreateOrUpdate(BaseModel):
     name: str
     is_active: bool = True
-    platforms: List[str] = ["ali", "jd", "rmfyb", "local_paper", "caa", "ggzy"]
+    platforms: List[str] = ["ali", "jd", "rmfysszc", "rmfyb", "local_paper", "caa", "ggzy"]
     module_types: List[str] = []
     cities: List[str] = []
     courts: List[str] = []
@@ -171,56 +171,70 @@ def apply_time_range_filter(query, time_range: str):
         # 近7天：今天 + 过去6天（共7个自然日）
         cutoff = datetime.combine(today - timedelta(days=6), dt_time.min)
         return query.filter(eff_time >= cutoff, eff_time <= today_end)
+    elif time_range == "month":
+        cutoff = datetime.combine(today - timedelta(days=29), dt_time.min)
+        return query.filter(eff_time >= cutoff, eff_time <= today_end)
+    elif time_range == "quarter":
+        cutoff = datetime.combine(today - timedelta(days=89), dt_time.min)
+        return query.filter(eff_time >= cutoff, eff_time <= today_end)
+    elif time_range == "year":
+        cutoff = datetime.combine(today - timedelta(days=364), dt_time.min)
+        return query.filter(eff_time >= cutoff, eff_time <= today_end)
     return query
 
 # ----------------- API Endpoints -----------------
 
 @app.get("/api/stats")
-def get_dashboard_stats(db: Session = Depends(get_db)):
-    """获取看板整体统计数据（含河南专属指标）"""
-    total_notices = db.query(CourtNotice).count()
-    total_alerts = db.query(AlertEvent).count()
-    unread_alerts = db.query(AlertEvent).filter(AlertEvent.is_read == False).count()
+def get_dashboard_stats(time_range: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    """获取看板整体统计数据（含河南专属指标，支持可选 time_range 过滤）"""
+    total_notices = apply_time_range_filter(db.query(CourtNotice), time_range).count()
+    alert_q = apply_time_range_filter(db.query(AlertEvent).join(CourtNotice, AlertEvent.notice_id == CourtNotice.id), time_range)
+    total_alerts = alert_q.count()
+    unread_alerts = alert_q.filter(AlertEvent.is_read == False).count()
     monitored_papers = db.query(PaperSeed).filter(PaperSeed.is_monitored == True).count()
     total_papers = db.query(PaperSeed).count()
     
     # 河南专注模式指标统计
-    total_henan_notices = db.query(CourtNotice).filter(CourtNotice.is_henan == True).count()
-    henan_auctions = db.query(CourtNotice).filter(
+    total_henan_notices = apply_time_range_filter(db.query(CourtNotice).filter(CourtNotice.is_henan == True), time_range).count()
+    henan_auctions = apply_time_range_filter(db.query(CourtNotice).filter(
         CourtNotice.is_henan == True,
-        or_(CourtNotice.platform.in_(["ali", "jd"]), CourtNotice.notice_type == "司法拍卖")
-    ).count()
-    henan_cases = db.query(CourtNotice).filter(
+        or_(
+            CourtNotice.platform.in_(["ali", "jd", "rmfysszc", "caa"]),
+            CourtNotice.module_type == "拍卖公告",
+            CourtNotice.notice_type == "司法拍卖"
+        )
+    ), time_range).count()
+    henan_cases = apply_time_range_filter(db.query(CourtNotice).filter(
         CourtNotice.is_henan == True,
         CourtNotice.platform.in_(["rmfyb", "local_paper"])
-    ).count()
+    ), time_range).count()
 
     # 河南地市覆盖统计
-    henan_cities = [c[0] for c in db.query(CourtNotice.henan_city).filter(CourtNotice.is_henan == True, CourtNotice.henan_city.isnot(None)).distinct().all() if c[0]]
+    henan_cities = [c[0] for c in apply_time_range_filter(db.query(CourtNotice.henan_city).filter(CourtNotice.is_henan == True, CourtNotice.henan_city.isnot(None)), time_range).distinct().all() if c[0]]
 
     # 分平台公示统计
     platforms = ["ali", "jd", "rmfysszc", "rmfyb", "local_paper", "caa", "ggzy"]
-    platform_counts = {p: db.query(CourtNotice).filter(CourtNotice.platform == p).count() for p in platforms}
+    platform_counts = {p: apply_time_range_filter(db.query(CourtNotice).filter(CourtNotice.platform == p), time_range).count() for p in platforms}
 
     # 三大核心业务模块统计（严格排除任何宣传类）
     module_counts = {
-        "公告": db.query(CourtNotice).filter(CourtNotice.module_type == "公告").count(),
-        "拍卖公告": db.query(CourtNotice).filter(CourtNotice.module_type == "拍卖公告").count(),
-        "债权转让": db.query(CourtNotice).filter(CourtNotice.module_type == "债权转让").count(),
+        "公告": apply_time_range_filter(db.query(CourtNotice).filter(CourtNotice.module_type == "公告"), time_range).count(),
+        "拍卖公告": apply_time_range_filter(db.query(CourtNotice).filter(CourtNotice.module_type == "拍卖公告"), time_range).count(),
+        "债权转让": apply_time_range_filter(db.query(CourtNotice).filter(CourtNotice.module_type == "债权转让"), time_range).count(),
     }
 
     # 河南专属三大模块分布
     henan_module_counts = {
-        "公告": db.query(CourtNotice).filter(CourtNotice.is_henan == True, CourtNotice.module_type == "公告").count(),
-        "拍卖公告": db.query(CourtNotice).filter(CourtNotice.is_henan == True, CourtNotice.module_type == "拍卖公告").count(),
-        "债权转让": db.query(CourtNotice).filter(CourtNotice.is_henan == True, CourtNotice.module_type == "债权转让").count(),
+        "公告": apply_time_range_filter(db.query(CourtNotice).filter(CourtNotice.is_henan == True, CourtNotice.module_type == "公告"), time_range).count(),
+        "拍卖公告": apply_time_range_filter(db.query(CourtNotice).filter(CourtNotice.is_henan == True, CourtNotice.module_type == "拍卖公告"), time_range).count(),
+        "债权转让": apply_time_range_filter(db.query(CourtNotice).filter(CourtNotice.is_henan == True, CourtNotice.module_type == "债权转让"), time_range).count(),
     }
 
     # 标的关注统计
-    starred_count = db.query(CourtNotice).filter(CourtNotice.is_starred == True).count()
+    starred_count = apply_time_range_filter(db.query(CourtNotice).filter(CourtNotice.is_starred == True), time_range).count()
 
     # 最近预警
-    recent_alerts = db.query(AlertEvent).order_by(desc(AlertEvent.created_at)).limit(5).all()
+    recent_alerts = alert_q.order_by(desc(AlertEvent.created_at)).limit(5).all()
 
     today_start = datetime.combine(datetime.now().date(), dt_time.min)
     today_end = datetime.combine(datetime.now().date(), dt_time.max)
@@ -357,6 +371,7 @@ def get_alerts(
     result = []
     for alert, notice in items:
         discount = round((notice.starting_price / notice.eval_price) * 10, 1) if (notice.starting_price and notice.eval_price and notice.eval_price > 0) else None
+        area_sqm, unit_price = extract_area_and_unit_price(notice.title, notice.content_text, notice.starting_price)
         now_dt = datetime.now()
         eff_dt = notice.publish_time if (notice.publish_time and notice.publish_time <= now_dt) else notice.created_at
         is_today = bool(eff_dt and eff_dt.date() == now_dt.date())
@@ -401,6 +416,8 @@ def get_alerts(
                 "starting_price": notice.starting_price,
                 "eval_price": notice.eval_price,
                 "discount_rate": discount,
+                "area_sqm": area_sqm,
+                "unit_price": unit_price,
                 "auction_stage": notice.auction_stage,
                 "asset_category": notice.asset_category,
                 "bidding_start": notice.bidding_start.strftime("%Y-%m-%d %H:%M") if notice.bidding_start else None,
@@ -620,12 +637,15 @@ def export_notices(
     sort_by: str = "publish_time_desc",
     starred_only: bool = False,
     time_range: Optional[str] = None,
+    note_tag: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """导出公示检索结果为 CSV 报表（含三大业务模块及河南专属字段、折扣率、跟进便签）"""
     q = db.query(CourtNotice)
     if starred_only:
         q = q.filter(CourtNotice.is_starred == True)
+    if note_tag:
+        q = q.filter(CourtNotice.user_notes.like(f"%[{note_tag}]%"))
     if platform:
         q = q.filter(CourtNotice.platform == platform)
     if module_type:
@@ -644,31 +664,8 @@ def export_notices(
     if henan_city:
         q = q.filter(CourtNotice.henan_city == henan_city)
 
-    # 时效过滤胶囊（标的发布时间或采集入库时间满足范围）
-    if time_range == "today":
-        today_start = datetime.combine(datetime.now().date(), dt_time.min)
-        q = q.filter(
-            or_(
-                CourtNotice.publish_time >= today_start,
-                CourtNotice.created_at >= today_start
-            )
-        )
-    elif time_range == "3days":
-        cutoff = datetime.combine((datetime.now() - timedelta(days=3)).date(), dt_time.min)
-        q = q.filter(
-            or_(
-                CourtNotice.publish_time >= cutoff,
-                CourtNotice.created_at >= cutoff
-            )
-        )
-    elif time_range == "7days":
-        cutoff = datetime.combine((datetime.now() - timedelta(days=7)).date(), dt_time.min)
-        q = q.filter(
-            or_(
-                CourtNotice.publish_time >= cutoff,
-                CourtNotice.created_at >= cutoff
-            )
-        )
+    # 时效过滤胶囊：统一按公告真实发布日期过滤
+    q = apply_time_range_filter(q, time_range)
 
     if price_min is not None:
         q = q.filter(CourtNotice.starting_price >= price_min)
@@ -711,6 +708,14 @@ def export_notices(
             else_=-1.0
         )
         items = q.order_by(price_expr.desc(), desc(CourtNotice.publish_time)).all()
+    elif sort_by == "bidding_start_asc":
+        now = datetime.now()
+        bidding_expr = case(
+            (and_(CourtNotice.bidding_start.isnot(None), CourtNotice.bidding_start >= now), CourtNotice.bidding_start),
+            (CourtNotice.bidding_start.isnot(None), datetime(2099, 1, 1)),
+            else_=datetime(2099, 12, 31)
+        )
+        items = q.order_by(bidding_expr.asc(), desc(CourtNotice.publish_time)).all()
     else:
         items = q.order_by(desc(CourtNotice.publish_time)).all()
 
@@ -721,15 +726,20 @@ def export_notices(
     writer.writerow([
         "ID", "核心业务模块", "来源平台", "法院名称", "案号", "涉及当事人", "公示类型",
         "标题/标的物", "是否涉豫", "涉及地市", "涉豫特征标签",
-        "起拍价(元)", "评估价(元)", "折扣率", "拍卖阶段", "发布时间", "处置便签", "原始链接"
+        "起拍价(元)", "评估价(元)", "折扣率", "建筑面积(㎡)", "折合单价(元/㎡)", "拍卖阶段", "发布时间", "开拍时间", "排雷自检标签", "处置便签", "原始链接"
     ])
     for n in items:
         discount = f"{round((n.starting_price / n.eval_price) * 10, 1)}折" if (n.starting_price and n.eval_price and n.eval_price > 0) else ""
+        area_sqm, unit_price = extract_area_and_unit_price(n.title, n.content_text, n.starting_price)
+        risk_tags_str = " | ".join(extract_risk_tags(f"{n.title or ''} {n.content_text or ''}"))
         row = [
             n.id, n.module_type or "公告", n.platform, n.court_name, n.case_number or "", n.parties or "", n.notice_type,
             n.title, "是" if n.is_henan else "否", n.henan_city or "", n.henan_tag or "",
-            n.starting_price or "", n.eval_price or "", discount, n.auction_stage or "",
-            n.publish_time.strftime("%Y-%m-%d %H:%M") if n.publish_time else "", getattr(n, "user_notes", "") or "", n.source_url
+            n.starting_price or "", n.eval_price or "", discount, area_sqm or "", unit_price or "", n.auction_stage or "",
+            n.publish_time.strftime("%Y-%m-%d %H:%M") if n.publish_time else "",
+            n.bidding_start.strftime("%Y-%m-%d %H:%M") if n.bidding_start else "",
+            risk_tags_str,
+            getattr(n, "user_notes", "") or "", n.source_url
         ]
         writer.writerow([sanitize_csv_cell(c) for c in row])
 
@@ -760,6 +770,7 @@ def get_notices(
     sort_by: str = "publish_time_desc",
     starred_only: bool = False,
     time_range: Optional[str] = None,
+    note_tag: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
     limit: Optional[int] = None,
@@ -771,6 +782,8 @@ def get_notices(
     scope_q = db.query(CourtNotice)
     if starred_only:
         scope_q = scope_q.filter(CourtNotice.is_starred == True)
+    if note_tag:
+        scope_q = scope_q.filter(CourtNotice.user_notes.like(f"%[{note_tag}]%"))
     if asset_category:
         if asset_category in ("房产", "住宅/商业房产"):
             scope_q = scope_q.filter(CourtNotice.asset_category.in_(["房产", "住宅/商业房产"]))
@@ -891,12 +904,21 @@ def get_notices(
             else_=-1.0
         )
         items = q.order_by(price_expr.desc(), desc(effective_time)).offset(actual_offset).limit(actual_limit).all()
+    elif sort_by == "bidding_start_asc":
+        now = datetime.now()
+        bidding_expr = case(
+            (and_(CourtNotice.bidding_start.isnot(None), CourtNotice.bidding_start >= now), CourtNotice.bidding_start),
+            (CourtNotice.bidding_start.isnot(None), datetime(2099, 1, 1)),
+            else_=datetime(2099, 12, 31)
+        )
+        items = q.order_by(bidding_expr.asc(), desc(effective_time)).offset(actual_offset).limit(actual_limit).all()
     else:
         items = q.order_by(desc(effective_time)).offset(actual_offset).limit(actual_limit).all()
 
     notices = []
     for n in items:
         discount = round((n.starting_price / n.eval_price) * 10, 1) if (n.starting_price and n.eval_price and n.eval_price > 0) else None
+        area_sqm, unit_price = extract_area_and_unit_price(n.title, n.content_text, n.starting_price)
         now_dt = datetime.now()
         eff_dt = n.publish_time if (n.publish_time and n.publish_time <= now_dt) else n.created_at
         is_today = bool(eff_dt and eff_dt.date() == now_dt.date())
@@ -932,6 +954,8 @@ def get_notices(
             "starting_price": n.starting_price,
             "eval_price": n.eval_price,
             "discount_rate": discount,
+            "area_sqm": area_sqm,
+            "unit_price": unit_price,
             "auction_stage": n.auction_stage,
             "asset_category": n.asset_category,
             "bidding_start": n.bidding_start.strftime("%Y-%m-%d %H:%M") if n.bidding_start else None,
@@ -989,6 +1013,8 @@ def get_notice_detail(notice_id: int, db: Session = Depends(get_db)):
     if n.starting_price is not None and n.eval_price is not None and n.eval_price > 0:
         discount_rate = round((n.starting_price / n.eval_price) * 10, 1)
 
+    area_sqm, unit_price = extract_area_and_unit_price(n.title, n.content_text, n.starting_price)
+
     return {
         "id": n.id,
         "platform": n.platform,
@@ -1004,6 +1030,8 @@ def get_notice_detail(notice_id: int, db: Session = Depends(get_db)):
         "starting_price": n.starting_price,
         "eval_price": n.eval_price,
         "discount_rate": discount_rate,
+        "area_sqm": area_sqm,
+        "unit_price": unit_price,
         "auction_stage": n.auction_stage,
         "asset_category": n.asset_category,
         "bidding_start": n.bidding_start.isoformat() if n.bidding_start else None,
@@ -1151,19 +1179,32 @@ def get_related_notices(notice_id: int, db: Session = Depends(get_db)):
         discount = None
         if n.starting_price is not None and n.eval_price is not None and n.eval_price > 0:
             discount = round((n.starting_price / n.eval_price) * 10, 1)
+        area_sqm, unit_price = extract_area_and_unit_price(n.title, n.content_text, n.starting_price)
 
         items.append({
             "id": n.id,
             "platform": n.platform,
             "court_name": n.court_name,
             "case_number": n.case_number,
+            "parties": n.parties,
             "title": n.title,
+            "content_text": n.content_text,
             "notice_type": n.notice_type,
             "module_type": n.module_type or "公告",
             "auction_stage": n.auction_stage,
+            "asset_category": n.asset_category,
             "starting_price": n.starting_price,
             "eval_price": n.eval_price,
             "discount_rate": discount,
+            "area_sqm": area_sqm,
+            "unit_price": unit_price,
+            "bidding_start": n.bidding_start.isoformat() if n.bidding_start else None,
+            "bidding_end": n.bidding_end.isoformat() if n.bidding_end else None,
+            "is_henan": n.is_henan,
+            "henan_city": n.henan_city,
+            "henan_tag": n.henan_tag,
+            "is_starred": bool(getattr(n, "is_starred", False)),
+            "user_notes": getattr(n, "user_notes", "") or "",
             "publish_time": n.publish_time.strftime("%Y-%m-%d %H:%M") if n.publish_time else None,
             "source_url": n.source_url,
             "match_reason": item["reason"],
